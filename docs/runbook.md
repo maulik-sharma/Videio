@@ -9,9 +9,11 @@ Portainer stack on the VPS, behind Nginx Proxy Manager (NPM), at
 1. A push to `main` runs **CI** (`.github/workflows/ci.yml`): lint, tests, then
    builds and pushes `ghcr.io/maulik-sharma/videio-{api,web}` tagged
    `sha-<7 chars>` and `latest`.
-2. When CI succeeds, **Deploy** (`.github/workflows/deploy.yml`) POSTs the
-   Portainer stack webhook with `?IMAGE_TAG=sha-<7 chars>`. Portainer pulls
-   those images and redeploys the stack.
+2. When CI succeeds, **Deploy** (`.github/workflows/deploy.yml`) joins the
+   tailnet as a temporary `tag:ci` node, then POSTs the Portainer stack
+   webhook with `?IMAGE_TAG=sha-<7 chars>`. Portainer is not exposed to the
+   internet and is reachable only over Tailscale. Portainer pulls those images
+   and redeploys the stack.
 3. The `smoke` job polls `https://videio.mauliksharma.org/healthz` until it
    reports `"version": "sha-<7 chars>"`. If that does not happen within about
    5 minutes, the workflow fails.
@@ -54,13 +56,83 @@ Changes to `compose.prod.yaml` are not picked up automatically: the webhook
 only re-pulls images. Paste the new file into the stack editor when it
 changes.
 
-### 4. GitHub environment
+### 4. Tailscale access for the deploy job
 
-Repo **Settings → Environments → New environment** named `production`, with
-the secret `PORTAINER_WEBHOOK_URL` set to the webhook URL from the previous
-step. Optionally restrict deployments to the `main` branch.
+Portainer (`maulikpi`, `100.99.220.35:9443`) is reachable only inside the
+tailnet. The deploy job joins as an ephemeral node tagged `tag:ci`, which the
+policy allows to reach that one port and nothing else.
 
-### 5. Nginx Proxy Manager proxy host
+**Access policy** (admin console → Access controls). The existing rule
+`src: ["maulik.jaipur@gmail.com"] → *:*` covers only devices logged in as
+that user. Tagged devices belong to the tag, not the user, so it does not
+cover `tag:ci`. The policy adds these top-level sections (siblings of
+`acls`, not inside it), plus one rule in `acls`:
+
+```jsonc
+"tagOwners": {
+    "tag:ci": ["autogroup:admin"],
+},
+"hosts": {
+    "portainer": "100.99.220.35",
+},
+"acls": [
+    {"action": "accept", "src": ["maulik.jaipur@gmail.com"], "dst": ["*:*"]},
+    // GitHub deploy job: only the Portainer webhook port.
+    {"action": "accept", "src": ["tag:ci"], "proto": "tcp", "dst": ["portainer:9443"]},
+],
+"tests": [
+    {
+        "src":    "tag:ci",
+        "accept": ["portainer:9443"],
+        "deny":   ["portainer:22", "100.68.101.98:443", "100.125.113.127:22"],
+    },
+    {"src": "maulik.jaipur@gmail.com", "accept": ["portainer:9443", "100.68.101.98:443"]},
+],
+```
+
+The `tests` run on every save, and Tailscale rejects any edit that would
+widen what `tag:ci` can reach. Never add a `src: ["*"]` rule: `*` includes
+tagged devices.
+
+**Trust credential** (admin console → Settings → Trust credentials → add an
+OpenID Connect credential):
+
+- Issuer: GitHub (`https://token.actions.githubusercontent.com`)
+- Subject: `repo:maulik-sharma/Videio:environment:production`. Only jobs
+  running in the `production` environment of this repo can use it.
+- Scope: Auth Keys (write), tag `tag:ci`
+
+It produces a **client ID** and an **audience**. These are not secret: GitHub
+signs a short-lived token per job, and Tailscale only accepts tokens whose
+subject matches.
+
+### 5. GitHub environment
+
+Repo **Settings → Environments → New environment** named `production`.
+Optionally restrict deployments to the `main` branch.
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Secret | `PORTAINER_WEBHOOK_URL` | Stack webhook URL using the Tailscale IP, e.g. `https://100.99.220.35:9443/api/stacks/webhooks/<id>` |
+| Variable | `PORTAINER_TAILNET_HOST` | `100.99.220.35` (pinged to confirm the tailnet path is up) |
+| Variable | `PORTAINER_PUBKEY_PIN` | `sha256//sZJ+ZtM6gtwIi692kKlIVwta9hUHi5HSSVe6ju0JYBg=` |
+| Variable | `TS_CLIENT_ID` | Client ID from the trust credential |
+| Variable | `TS_AUDIENCE` | Audience from the trust credential |
+
+**About the pin:** Portainer's self-signed certificate only names
+`localhost`, so curl skips the normal check and instead requires the
+server's public key to match this hash. The certificate expires in May 2031.
+If Portainer ever regenerates it, deploys fail with curl exit code 90.
+Recompute the pin from a tailnet machine:
+
+```sh
+echo | openssl s_client -connect 100.99.220.35:9443 2>/dev/null \
+  | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der \
+  | openssl dgst -sha256 -binary | base64
+# prefix the output with sha256//
+```
+
+### 6. Nginx Proxy Manager proxy host
 
 | Field | Value |
 | --- | --- |
