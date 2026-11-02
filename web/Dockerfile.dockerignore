@@ -1,0 +1,6 @@
+# Context is the repo root; only web/ and infra/nginx/ are needed.
+*
+!web/
+!infra/nginx/
+web/node_modules
+web/dist

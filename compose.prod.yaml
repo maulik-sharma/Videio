@@ -1,0 +1,54 @@
+# Production (VPS). Deployed as a Portainer stack (web editor): paste this file,
+# set the variables from .env.example in the stack's environment, and enable the
+# stack webhook. CI triggers the webhook with ?IMAGE_TAG=sha-xxxxxxx.
+#
+# Nginx Proxy Manager reaches the edge at http://<vps-ip>:${EDGE_PORT}.
+
+name: videio
+
+services:
+  edge:
+    image: ghcr.io/maulik-sharma/videio-web:${IMAGE_TAG:-latest}
+    init: true
+    ports:
+      - "${EDGE_BIND:-0.0.0.0}:${EDGE_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [public, internal]
+    restart: unless-stopped
+
+  api:
+    image: ghcr.io/maulik-sharma/videio-api:${IMAGE_TAG:-latest}
+    init: true
+    environment:
+      VIDEIO_ENV: prod
+    deploy:
+      replicas: 2
+    networks: [internal]
+    restart: unless-stopped
+
+  core-primary:
+    image: postgres:17
+    command: ["postgres", "-c", "shared_buffers=64MB"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-videio}
+      POSTGRES_USER: ${POSTGRES_USER:-videio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - core-primary-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+    restart: unless-stopped
+
+networks:
+  public: {}
+  internal:
+    internal: true
+
+volumes:
+  core-primary-data: {}

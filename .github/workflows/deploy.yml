@@ -1,0 +1,91 @@
+name: Deploy
+
+# Runs after CI succeeds on main (CI pushed sha-<7> images to GHCR), or by hand
+# with an older sha- tag to roll back.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy, e.g. sha-1a2b3c4 (use a previous one to roll back)"
+        required: true
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_URL: https://videio.mauliksharma.org
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ env.APP_URL }}
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - name: Resolve image tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="sha-${HEAD_SHA::7}"
+          fi
+          if ! [[ "$tag" =~ ^sha-[0-9a-f]{7}$ ]]; then
+            echo "::error::Invalid image tag '$tag' (expected sha-xxxxxxx)"
+            exit 1
+          fi
+          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Deploying $tag"
+
+      - name: Trigger Portainer stack webhook
+        env:
+          WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+          IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::error::PORTAINER_WEBHOOK_URL secret is not set in the production environment"
+            exit 1
+          fi
+          # Portainer substitutes query parameters into the stack's compose
+          # variables, so ${IMAGE_TAG} in compose.prod.yaml becomes this tag.
+          curl --fail-with-body --silent --show-error --max-time 60 \
+            -X POST "${WEBHOOK_URL}?IMAGE_TAG=${IMAGE_TAG}"
+
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the new version to serve traffic
+        env:
+          EXPECTED: ${{ needs.deploy.outputs.image_tag }}
+        run: |
+          # The webhook returns before the redeploy finishes, so poll until
+          # /healthz reports the version we just deployed (up to ~5 minutes).
+          for attempt in $(seq 1 30); do
+            body=$(curl --silent --max-time 5 "$APP_URL/healthz" || true)
+            echo "attempt $attempt: ${body:-no response}"
+            if echo "$body" | grep -q "\"version\":\"$EXPECTED\""; then
+              echo "Live: $EXPECTED"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$APP_URL/healthz did not report $EXPECTED in time"
+          exit 1
