@@ -1,0 +1,54 @@
+# Local development: the full stack, built from source.
+#   cp .env.example .env && docker compose up --build
+#   open http://localhost:8080
+
+name: videio
+
+services:
+  edge:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    init: true
+    ports:
+      - "${EDGE_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [public, internal]
+    restart: unless-stopped
+
+  api:
+    build:
+      context: backend
+      target: api
+    init: true
+    environment:
+      VIDEIO_ENV: dev
+    networks: [internal]
+    restart: unless-stopped
+
+  core-primary:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-videio}
+      POSTGRES_USER: ${POSTGRES_USER:-videio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - core-primary-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+    restart: unless-stopped
+
+networks:
+  # Only the edge is reachable from outside; everything else stays internal.
+  public: {}
+  internal:
+    internal: true
+
+volumes:
+  core-primary-data: {}
