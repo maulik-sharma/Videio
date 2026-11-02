@@ -62,28 +62,37 @@ Portainer (`maulikpi`, `100.99.220.35:9443`) is reachable only inside the
 tailnet. The deploy job joins as an ephemeral node tagged `tag:ci`, which the
 policy allows to reach that one port and nothing else.
 
-**Access policy** (admin console → Access controls). The policy's default
-`acls` rule (`src: ["*"]`) also matches tagged nodes, which would give
-`tag:ci` access to every device. Replace that rule with these entries, and
-leave other sections such as `ssh` as they are:
+**Access policy** (admin console → Access controls). The existing rule
+`src: ["maulik.jaipur@gmail.com"] → *:*` covers only devices logged in as
+that user. Tagged devices belong to the tag, not the user, so it does not
+cover `tag:ci`. The policy adds these top-level sections (siblings of
+`acls`, not inside it), plus one rule in `acls`:
 
 ```jsonc
 "tagOwners": {
-  "tag:ci": ["autogroup:admin"],
+    "tag:ci": ["autogroup:admin"],
 },
 "hosts": {
-  "portainer": "100.99.220.35",
+    "portainer": "100.99.220.35",
 },
-"grants": [
-  // Your own devices keep reaching everything, as before.
-  {"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
-  // CI runners reach only the Portainer API/webhook.
-  {"src": ["tag:ci"], "dst": ["portainer"], "ip": ["tcp:9443"]},
+"acls": [
+    {"action": "accept", "src": ["maulik.jaipur@gmail.com"], "dst": ["*:*"]},
+    // GitHub deploy job: only the Portainer webhook port.
+    {"action": "accept", "src": ["tag:ci"], "proto": "tcp", "dst": ["portainer:9443"]},
+],
+"tests": [
+    {
+        "src":    "tag:ci",
+        "accept": ["portainer:9443"],
+        "deny":   ["portainer:22", "100.68.101.98:443", "100.125.113.127:22"],
+    },
+    {"src": "maulik.jaipur@gmail.com", "accept": ["portainer:9443", "100.68.101.98:443"]},
 ],
 ```
 
-If you tag any of your own devices later, add their tags to the first
-grant's `src`. Otherwise they lose access the same way `tag:ci` is limited.
+The `tests` run on every save, and Tailscale rejects any edit that would
+widen what `tag:ci` can reach. Never add a `src: ["*"]` rule: `*` includes
+tagged devices.
 
 **Trust credential** (admin console → Settings → Trust credentials → add an
 OpenID Connect credential):
