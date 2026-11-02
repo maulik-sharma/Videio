@@ -2,7 +2,9 @@
 # Build context is the repository root (the edge config lives in infra/nginx).
 
 # ---- build the SPA ----
-FROM node:22-alpine AS build
+# The output is plain static files, so build on the runner's native platform
+# and skip QEMU emulation for this stage in multi-arch builds.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
