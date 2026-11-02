@@ -33,6 +33,9 @@ jobs:
     environment:
       name: production
       url: ${{ env.APP_URL }}
+    permissions:
+      contents: read
+      id-token: write # Tailscale workload identity federation (GitHub OIDC token)
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
     steps:
@@ -54,18 +57,34 @@ jobs:
           echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Deploying $tag"
 
+      # Portainer is only reachable inside the tailnet, so the runner joins it as
+      # an ephemeral node tagged tag:ci. The tailnet policy limits tag:ci to the
+      # Portainer port. Auth is GitHub OIDC (no long-lived Tailscale secret).
+      - name: Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          tags: tag:ci
+          ping: ${{ vars.PORTAINER_TAILNET_HOST }}
+
       - name: Trigger Portainer stack webhook
         env:
           WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+          PUBKEY_PIN: ${{ vars.PORTAINER_PUBKEY_PIN }}
           IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
         run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "::error::PORTAINER_WEBHOOK_URL secret is not set in the production environment"
+          if [ -z "$WEBHOOK_URL" ] || [ -z "$PUBKEY_PIN" ]; then
+            echo "::error::Set the PORTAINER_WEBHOOK_URL secret and PORTAINER_PUBKEY_PIN variable in the production environment"
             exit 1
           fi
+          # Portainer's certificate is self-signed for localhost, so normal
+          # verification can't succeed. --insecure skips the chain/name check;
+          # --pinnedpubkey still refuses any server whose key isn't Portainer's.
           # Portainer substitutes query parameters into the stack's compose
           # variables, so ${IMAGE_TAG} in compose.prod.yaml becomes this tag.
           curl --fail-with-body --silent --show-error --max-time 60 \
+            --insecure --pinnedpubkey "$PUBKEY_PIN" \
             -X POST "${WEBHOOK_URL}?IMAGE_TAG=${IMAGE_TAG}"
 
   smoke:
