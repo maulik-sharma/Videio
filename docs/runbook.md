@@ -8,7 +8,8 @@ Portainer stack on the VPS, behind Nginx Proxy Manager (NPM), at
 
 1. A push to `main` runs **CI** (`.github/workflows/ci.yml`): lint, tests, then
    builds and pushes `ghcr.io/maulik-sharma/videio-{api,web}` tagged
-   `sha-<7 chars>` and `latest`.
+   `sha-<7 chars>` and `latest`, for `linux/amd64` and `linux/arm64` (the VPS
+   is arm64; the arm64 variant is built under QEMU).
 2. When CI succeeds, **Deploy** (`.github/workflows/deploy.yml`) joins the
    tailnet as a temporary `tag:ci` node, then POSTs the Portainer stack
    webhook with `?IMAGE_TAG=sha-<7 chars>`. Portainer is not exposed to the
@@ -98,8 +99,14 @@ tagged devices.
 OpenID Connect credential):
 
 - Issuer: GitHub (`https://token.actions.githubusercontent.com`)
-- Subject: `repo:maulik-sharma/Videio:environment:production`. Only jobs
-  running in the `production` environment of this repo can use it.
+- Subject: `repo:maulik-sharma@88702557/Videio@1443300543:environment:production`.
+  Only jobs running in the `production` environment of this repo can use it.
+  GitHub's `sub` includes the numeric owner and repo IDs, so the plain
+  `repo:maulik-sharma/Videio:...` form never matches. The IDs never change on
+  a rename, so a recreated repo with the same name can't use the credential.
+  On a mismatch, the credential's page in the admin console shows the value
+  it received.
+- Custom claims: none (the subject already pins repo and environment).
 - Scope: Auth Keys (write), tag `tag:ci`
 
 It produces a **client ID** and an **audience**. These are not secret: GitHub
