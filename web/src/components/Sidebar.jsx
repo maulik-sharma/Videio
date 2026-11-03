@@ -33,14 +33,6 @@ function SideLinks({ me, onNavigate }) {
           <SideLink to="/login" icon={<SignInIcon />} label="Log in" onNavigate={onNavigate} />
         )}
       </div>
-      {me ? null : (
-        <div className="side-section side-prompt">
-          <p>Log in to upload videos and keep track of them.</p>
-          <Link to="/register" className="button" onClick={onNavigate}>
-            Create account
-          </Link>
-        </div>
-      )}
     </>
   );
 }
