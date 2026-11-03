@@ -1,5 +1,6 @@
-# Overrides for integration tests (CI and local): publish the databases and
-# Redis on localhost so pytest on the host can reach them.
+# Overrides for integration tests (CI and local): publish the databases, Redis
+# and RabbitMQ on localhost so pytest on the host can reach them. The S3 port is
+# already published by compose.yaml.
 #   docker compose -f compose.yaml -f compose.ci.yaml up -d --build --wait
 
 services:
@@ -15,3 +16,5 @@ services:
   redis:
     ports: ["127.0.0.1:56379:6379"]
     networks: [internal, public]
+  rabbitmq:
+    ports: ["127.0.0.1:55672:5672"]
