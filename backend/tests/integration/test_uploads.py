@@ -38,10 +38,17 @@ async def test_multipart_upload_completes_without_api_file_bytes(client: AsyncCl
     )
     assert completed.status_code == 202, completed.text
     assert completed.json()["status"] == "uploaded"
+    assert completed.json()["owner_name"] == "Ann"
 
     listed = await client.get("/api/me/videos")
     assert listed.status_code == 200
     assert listed.json()["items"][0]["public_id"] == upload["public_id"]
+    assert listed.json()["items"][0]["owner_name"] == "Ann"
+
+    # The owner can open their not-yet-ready video, with the uploader's name.
+    detail = await client.get(f"/api/videos/{upload['public_id']}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["owner_name"] == "Ann"
 
 
 async def test_upload_rejects_unsupported_media_type(client: AsyncClient) -> None:

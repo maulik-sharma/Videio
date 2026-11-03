@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router';
+import { Link, Route, Routes } from 'react-router';
 import Topbar from './components/Topbar.jsx';
 import AuthPage from './pages/AuthPage.jsx';
 import Home from './pages/Home.jsx';
@@ -9,8 +9,13 @@ import VideoPage from './pages/VideoPage.jsx';
 function NotFound() {
   return (
     <main className="page">
-      <h1>Page not found</h1>
-      <p className="muted">There is nothing at this address.</p>
+      <div className="empty">
+        <strong>Page not found</strong>
+        <span>There is nothing at this address.</span>
+        <Link className="button" to="/">
+          Browse latest videos
+        </Link>
+      </div>
     </main>
   );
 }

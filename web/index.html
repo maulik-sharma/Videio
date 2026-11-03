@@ -4,7 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Videio</title>
+    <script>
+      // Apply a saved light/dark choice before first paint (see src/utils/theme.js).
+      try {
+        const theme = localStorage.getItem('videio-theme');
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      } catch {
+        // Storage blocked: follow the system setting.
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

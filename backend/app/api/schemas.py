@@ -87,6 +87,7 @@ class CompleteVideoIn(BaseModel):
 class VideoSummaryOut(BaseModel):
     id: int
     public_id: str
+    owner_name: str
     title: str
     description: str
     visibility: Visibility

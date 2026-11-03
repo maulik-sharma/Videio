@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router';
 import { useLogin, useMe, useRegister } from '../auth/session.js';
+import Wordmark from '../components/Wordmark.jsx';
 
 // Friendlier wording for the API's field validation messages.
 const FIELD_HINTS = {
@@ -73,61 +74,70 @@ export default function AuthPage({ mode }) {
   };
 
   return (
-    <main className="page page-narrow">
-      <h1>{isRegister ? 'Create an account' : 'Log in'}</h1>
-      <p className="muted">
-        {isRegister ? 'Already have an account? ' : 'No account yet? '}
-        <Link to={{ pathname: isRegister ? '/login' : '/register', search: params.toString() }}>
-          {isRegister ? 'Log in' : 'Create one'}
+    <main className="auth">
+      <div className="auth-panel">
+        <Link to="/" className="auth-brand" aria-label="Videio home">
+          <Wordmark />
         </Link>
-      </p>
+        <h1>{isRegister ? 'Create your account' : 'Log in to Videio'}</h1>
+        <p className="page-subtitle">
+          {isRegister ? 'Already have an account? ' : 'New to Videio? '}
+          <Link to={{ pathname: isRegister ? '/login' : '/register', search: params.toString() }}>
+            {isRegister ? 'Log in' : 'Create an account'}
+          </Link>
+        </p>
 
-      <form className="form" onSubmit={submit} noValidate>
-        {message ? (
-          <p className="form-error" role="alert">
-            {message}
-          </p>
-        ) : null}
-        {isRegister ? (
+        <form className="form" onSubmit={submit} noValidate>
+          {message ? (
+            <div className="notice notice-error" role="alert">
+              {message}
+            </div>
+          ) : null}
+          {isRegister ? (
+            <Field
+              id="display_name"
+              label="Display name"
+              autoComplete="nickname"
+              value={form.displayName}
+              onChange={update('displayName')}
+              error={fieldError('display_name')}
+              hint="Shown next to your videos."
+            />
+          ) : null}
           <Field
-            id="display_name"
-            label="Display name"
-            autoComplete="nickname"
-            value={form.displayName}
-            onChange={update('displayName')}
-            error={fieldError('display_name')}
-            hint="Shown next to your videos."
+            id="email"
+            label="Email"
+            type="email"
+            autoComplete="email"
+            value={form.email}
+            onChange={update('email')}
+            error={fieldError('email')}
           />
-        ) : null}
-        <Field
-          id="email"
-          label="Email"
-          type="email"
-          autoComplete="email"
-          value={form.email}
-          onChange={update('email')}
-          error={fieldError('email')}
-        />
-        <Field
-          id="password"
-          label="Password"
-          type="password"
-          autoComplete={isRegister ? 'new-password' : 'current-password'}
-          value={form.password}
-          onChange={update('password')}
-          error={fieldError('password')}
-          hint={isRegister ? 'At least 8 characters.' : undefined}
-        />
-        <button type="submit" className="button button-primary" disabled={mutation.isPending}>
-          {mutation.isPending
-            ? isRegister
-              ? 'Creating account…'
-              : 'Logging in…'
-            : isRegister
-              ? 'Create account'
-              : 'Log in'}
-        </button>
-      </form>
+          <Field
+            id="password"
+            label="Password"
+            type="password"
+            autoComplete={isRegister ? 'new-password' : 'current-password'}
+            value={form.password}
+            onChange={update('password')}
+            error={fieldError('password')}
+            hint={isRegister ? 'At least 8 characters.' : undefined}
+          />
+          <button
+            type="submit"
+            className="button button-primary button-block"
+            disabled={mutation.isPending}
+          >
+            {mutation.isPending
+              ? isRegister
+                ? 'Creating account…'
+                : 'Logging in…'
+              : isRegister
+                ? 'Create account'
+                : 'Log in'}
+          </button>
+        </form>
+      </div>
     </main>
   );
 }
