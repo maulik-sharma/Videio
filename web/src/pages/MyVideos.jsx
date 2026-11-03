@@ -67,7 +67,7 @@ export default function MyVideos() {
   const firstLoad = videos.isPending && items.length === 0;
 
   return (
-    <main className="page">
+    <main className="page page-list">
       <div className="page-heading">
         <div>
           <h1>My videos</h1>
