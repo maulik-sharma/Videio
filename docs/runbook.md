@@ -15,8 +15,11 @@ Portainer stack on the VPS, behind Nginx Proxy Manager (NPM), at
    webhook with `?IMAGE_TAG=sha-<7 chars>`. Portainer is not exposed to the
    internet and is reachable only over Tailscale. Portainer pulls those images
    and redeploys the stack.
-3. The `smoke` job polls `https://videio.mauliksharma.org/healthz` until it
-   reports `"version": "sha-<7 chars>"`. If that does not happen within about
+3. The `migrate` service runs `alembic upgrade head` against the primary and
+   exits; the API containers start only after it succeeds.
+4. The `smoke` job polls `https://videio.mauliksharma.org/readyz` until it
+   returns 200 (primary, replica and Redis reachable) and reports
+   `"version": "sha-<7 chars>"`. If that does not happen within about
    5 minutes, the workflow fails.
 
 ## Rollback
@@ -24,6 +27,43 @@ Portainer stack on the VPS, behind Nginx Proxy Manager (NPM), at
 Actions → **Deploy** → **Run workflow** → enter a previous tag (e.g.
 `sha-1a2b3c4`; the tags are listed under the repo's Packages). The same
 webhook and smoke check run against that tag.
+
+Migrations only run forward. Rolling back to an image older than the
+database schema works only while the old code tolerates the newer schema
+(e.g. an added nullable column). Check `backend/migrations/versions/` for
+migrations added since the target tag before rolling back across one.
+
+## Admin accounts
+
+Registration always creates a `user`. To make an existing account an admin,
+open a console in one of the stack's `api` containers (Portainer →
+Containers → `videio-api-1` → Console, `/bin/sh`) and run:
+
+```sh
+python -m app.cli promote-admin someone@example.com
+```
+
+It takes effect on that user's next request. Locally:
+`docker compose exec api python -m app.cli promote-admin someone@example.com`.
+
+## Phase 1 rollout (one time)
+
+Phase 1 adds the replica, Redis, the `migrate` job and two secrets. The
+Portainer stack is pasted compose text, so it does not update itself:
+
+1. Merge the Phase 1 PR. CI pushes the new images, and the automatic
+   Deploy is **expected to fail**: Portainer redeploys the new images with
+   the old stack definition, which has no Redis, replica or `JWT_SECRET`.
+2. In Portainer, open the `videio` stack and add the environment variables
+   `REPLICATION_PASSWORD` and `JWT_SECRET` (each `openssl rand -hex 32`).
+3. Stop the stack, then delete its primary database volume (Volumes →
+   `videio_core-primary-data`). It holds no data yet, and Postgres only runs
+   the replication init script on an empty data directory.
+4. Paste the new `compose.prod.yaml` into the stack editor and deploy.
+5. Re-run the failed Deploy run (**Re-run failed jobs**). It triggers the
+   webhook with the same tag, and the smoke check should now pass.
+6. Register your account on the site and promote it (see Admin accounts).
+   The System numbers are at `/api/admin/system`.
 
 ## One-time setup
 
@@ -48,7 +88,8 @@ The packages only exist after the first CI run on `main` has pushed them.
 1. **Stacks → Add stack → Web editor**, name `videio`.
 2. Paste the contents of `compose.prod.yaml`.
 3. Under **Environment variables**, add the variables from `.env.example`.
-   Use a strong `POSTGRES_PASSWORD`, and set `EDGE_PORT` to a free host port.
+   Generate `POSTGRES_PASSWORD`, `REPLICATION_PASSWORD` and `JWT_SECRET` with
+   `openssl rand -hex 32`, and set `EDGE_PORT` to a free host port.
 4. Deploy the stack.
 5. Open the stack's **Editor** tab, toggle **Create a stack webhook** and
    copy the URL. Stack webhooks are a Portainer Business Edition feature.
