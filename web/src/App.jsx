@@ -2,6 +2,8 @@ import { Route, Routes } from 'react-router';
 import Topbar from './components/Topbar.jsx';
 import AuthPage from './pages/AuthPage.jsx';
 import Home from './pages/Home.jsx';
+import MyVideos from './pages/MyVideos.jsx';
+import Upload from './pages/Upload.jsx';
 
 function NotFound() {
   return (
@@ -18,6 +20,8 @@ export default function App() {
       <Topbar />
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/upload" element={<Upload />} />
+        <Route path="/my-videos" element={<MyVideos />} />
         <Route path="/login" element={<AuthPage mode="login" key="login" />} />
         <Route path="/register" element={<AuthPage mode="register" key="register" />} />
         <Route path="*" element={<NotFound />} />

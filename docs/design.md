@@ -135,3 +135,38 @@ one small instance. Sharding would add a routing layer, cross-shard queries and
 more containers for no gain. It would become worth considering when write
 volume or table size outgrows a single primary, even after adding replicas and
 caching.
+
+## Direct-to-storage multipart uploads
+
+**What.** `POST /api/videos` stores only video metadata in the primary database,
+starts an S3 multipart upload in SeaweedFS, and returns one SigV4-presigned PUT
+URL per 10 MiB part. The browser uploads up to three parts concurrently and
+sends the returned ETags to `POST /api/videos/{publicId}/complete`. The API
+never receives the video bytes. Completion verifies the final object size before
+changing the row from `pending_upload` to `uploaded`.
+
+**Why.** A 200 MB upload does not consume an API worker's memory, connection or
+bandwidth. The API remains responsible for authorization, metadata and the
+state transition while SeaweedFS handles the bytes.
+
+**Trade-off.** Multipart state can be abandoned if a browser closes halfway
+through. Phase 2 records the multipart id and has the later maintenance phase
+own expiry cleanup; retries of the final request are idempotent after the row
+is marked `uploaded`. Presigned URLs are deliberately short-lived and tied to
+the exact public S3 host. Path-style addressing and a separate `s3.` host avoid
+the signature changing between the URL returned by the API and the URL reached
+by the browser.
+
+**How to see it.** Log in, open **Upload**, select a supported video and watch
+the browser Network panel: the JSON requests go to `/api`, while the large PUT
+requests go directly to the S3 host. The **My videos** page shows the row as
+`Pending upload` until the completion request changes it to `Uploaded`.
+
+## Video metadata and public IDs
+
+The `videos` table uses a numeric identity key for joins and an 11-character
+random base62 `public_id` for URLs. The random public id makes unlisted links
+hard to guess without forcing every internal query to use a string key. My
+videos uses `(created_at, id)` keyset pagination; it never uses `OFFSET`, so
+walking through older uploads does not make the database scan and discard every
+previous page.

@@ -11,6 +11,16 @@ export default function Topbar() {
       <Link to="/" className="brand">
         Videio
       </Link>
+      <nav className="topbar-nav" aria-label="Main navigation">
+        <NavLink to="/my-videos" className="nav-link">
+          My videos
+        </NavLink>
+        {me ? (
+          <NavLink to="/upload" className="nav-link">
+            Upload
+          </NavLink>
+        ) : null}
+      </nav>
       <nav className="topbar-actions" aria-label="Account">
         {isPending ? null : me ? (
           <>
