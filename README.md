@@ -28,11 +28,12 @@ docker compose up --build
 ```
 
 Open <http://localhost:8080>. Register an account, choose **Upload**, select a
-supported video and watch the browser send the file parts to the S3 gateway on
-port 8333. The API only receives metadata and ETags.
+supported video and watch the browser send the file parts to `/uploads/…`,
+which the edge passes straight to the S3 gateway. The API only receives
+metadata and ETags.
 
-For the production-shaped setup, set `S3_PUBLIC_ENDPOINT_URL` to the HTTPS S3
-host and `APP_ORIGIN` to the HTTPS app host before starting the stack.
+`APP_ORIGIN` must be the URL browsers use for the app (in production,
+`https://videio.mauliksharma.org`): upload URLs are signed for that host.
 
 ## Checks
 
