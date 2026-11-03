@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from app.api.deps import DbDep, RedisDep, SettingsDep
+from app.api.deps import BrokerDep, DbDep, RedisDep, SettingsDep
 
 router = APIRouter(tags=["ops"])
 
@@ -20,8 +20,10 @@ async def healthz(settings: SettingsDep) -> Health:
 
 
 @router.get("/readyz", responses={503: {"description": "A dependency is unreachable"}})
-async def readyz(db: DbDep, redis: RedisDep, settings: SettingsDep) -> JSONResponse:
-    """Readiness: primary, replica and Redis all answer. 503 lists what failed."""
+async def readyz(
+    db: DbDep, redis: RedisDep, broker: BrokerDep, settings: SettingsDep
+) -> JSONResponse:
+    """Readiness: databases, Redis and RabbitMQ all answer."""
     checks: dict[str, str] = {}
     for name, engine in (("db_primary", db.write_engine), ("db_replica", db.read_engine)):
         try:
@@ -35,6 +37,12 @@ async def readyz(db: DbDep, redis: RedisDep, settings: SettingsDep) -> JSONRespo
         checks["redis"] = "ok"
     except Exception as exc:
         checks["redis"] = f"error: {type(exc).__name__}"
+    try:
+        if broker.write_channel is None or broker.write_channel.is_closed:
+            raise ConnectionError("RabbitMQ broker is not connected")
+        checks["rabbitmq"] = "ok"
+    except Exception as exc:
+        checks["rabbitmq"] = f"error: {type(exc).__name__}"
 
     ok = all(v == "ok" for v in checks.values())
     return JSONResponse(

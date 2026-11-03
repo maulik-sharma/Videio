@@ -10,6 +10,7 @@ from app.core.errors import install_error_handlers
 from app.core.middleware import CsrfHeaderMiddleware, RequestIdMiddleware
 from app.db.engines import Database
 from app.services.storage import S3Storage
+from app.worker.broker import broker
 
 
 @asynccontextmanager
@@ -18,9 +19,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db = Database.from_settings(settings)
     app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
     app.state.storage = S3Storage.from_settings(settings)
+    app.state.broker = broker
     try:
+        await broker.startup()
         yield
     finally:
+        await broker.shutdown()
         await app.state.redis.aclose()
         await app.state.db.dispose()
 

@@ -16,6 +16,7 @@ from app.db.models import User
 from app.services.read_your_writes import user_recently_wrote
 from app.services.sessions import RefreshTokenStore
 from app.services.storage import S3Storage
+from app.worker.broker import VideioBroker
 
 ACCESS_COOKIE = "videio_at"
 REFRESH_COOKIE = "videio_rt"
@@ -43,6 +44,14 @@ def get_storage(request: Request) -> S3Storage:
 
 
 StorageDep = Annotated[S3Storage, Depends(get_storage)]
+
+
+def get_broker(request: Request) -> VideioBroker:
+    broker: VideioBroker = request.app.state.broker
+    return broker
+
+
+BrokerDep = Annotated[VideioBroker, Depends(get_broker)]
 
 
 def get_refresh_store(redis: RedisDep, settings: SettingsDep) -> RefreshTokenStore:

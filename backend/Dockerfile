@@ -37,3 +37,14 @@ EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status != 200)"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+
+# ---- worker: ffmpeg plus the same application package ----
+FROM runtime AS worker
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+USER videio
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["ffmpeg", "-version"]
+CMD ["taskiq", "worker", "app.worker.broker:broker", "app.worker.tasks", "--workers", "1", "--ack-type", "when_executed", "--wait-tasks-timeout", "300"]

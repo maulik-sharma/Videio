@@ -94,8 +94,12 @@ class VideoSummaryOut(BaseModel):
     size_bytes: int
     content_type: str
     duration_s: float | None
+    renditions: dict[str, object] | None
     thumbnail_key: str | None
+    playback_url: str | None
+    thumbnail_url: str | None
     view_count: int
+    failure_reason: str | None
     created_at: datetime
     updated_at: datetime
 

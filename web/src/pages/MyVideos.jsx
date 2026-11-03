@@ -53,7 +53,13 @@ export default function MyVideos() {
                 {video.status === 'ready' ? 'Ready' : '—'}
               </div>
               <div className="video-row-main">
-                <h2>{video.title}</h2>
+                <h2>
+                  {video.status === 'ready' ? (
+                    <Link to={`/v/${video.public_id}`}>{video.title}</Link>
+                  ) : (
+                    video.title
+                  )}
+                </h2>
                 <p className="muted">{video.description || 'No description'}</p>
                 <div className="video-meta">
                   <span className={`status status-${video.status}`}>

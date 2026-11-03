@@ -1,62 +1,53 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { useMe } from '../auth/session.js';
-
-function useApiHealth() {
-  const [health, setHealth] = useState({ state: 'checking' });
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch('/healthz', { signal: controller.signal })
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((body) => setHealth({ state: 'ok', version: body.version }))
-      .catch((err) => {
-        if (err.name !== 'AbortError') setHealth({ state: 'error', message: err.message });
-      });
-    return () => controller.abort();
-  }, []);
-
-  return health;
-}
-
-function ApiStatus() {
-  const health = useApiHealth();
-  if (health.state === 'checking') return <span className="badge">Checking API</span>;
-  if (health.state === 'error')
-    return <span className="badge badge-error">API unreachable: {health.message}</span>;
-  return <span className="badge badge-ok">API ok, version {health.version}</span>;
-}
+import { useFeed } from '../api/videos.js';
 
 export default function Home() {
-  const { data: me } = useMe();
+  const feed = useFeed();
+  const items = feed.data?.pages.flatMap((page) => page.items) ?? [];
   return (
     <main className="page">
-      <h1>Videio</h1>
-      <p className="muted">
-        Upload a video directly to object storage. Transcoding and playback arrive in the next
-        phase.
-      </p>
-      {me ? (
-        <div className="home-actions">
-          <Link className="button button-primary" to="/upload">
-            Upload a video
-          </Link>
-          <Link className="button" to="/my-videos">
-            My videos
-          </Link>
+      <div className="page-heading">
+        <div>
+          <h1>Public videos</h1>
+          <p className="muted">Ready videos from the public feed.</p>
+        </div>
+        <Link className="button button-primary" to="/upload">
+          Upload a video
+        </Link>
+      </div>
+      {feed.isPending ? <p className="muted">Loading feed…</p> : null}
+      {feed.isError ? <p className="form-error">Could not load the public feed.</p> : null}
+      {!feed.isPending && !feed.isError && items.length === 0 ? (
+        <div className="empty-state">
+          <strong>No public videos yet.</strong>
+          <span>Upload a video and make it public to see it here.</span>
         </div>
       ) : null}
-      <dl className="facts">
-        <dt>API</dt>
-        <dd>
-          <ApiStatus />
-        </dd>
-        <dt>Session</dt>
-        <dd>{me ? `Logged in as ${me.email}` : 'Not logged in'}</dd>
-      </dl>
+      {items.length > 0 ? (
+        <div className="feed-grid">
+          {items.map((video) => (
+            <Link className="video-card" to={`/v/${video.public_id}`} key={video.public_id}>
+              {video.thumbnail_url ? (
+                <img src={video.thumbnail_url} alt="" />
+              ) : (
+                <div className="video-placeholder">No thumbnail</div>
+              )}
+              <strong>{video.title}</strong>
+              <span className="muted">{video.view_count} views</span>
+            </Link>
+          ))}
+        </div>
+      ) : null}
+      {feed.hasNextPage ? (
+        <button
+          type="button"
+          className="button load-more"
+          onClick={() => feed.fetchNextPage()}
+          disabled={feed.isFetchingNextPage}
+        >
+          {feed.isFetchingNextPage ? 'Loading…' : 'Load more'}
+        </button>
+      ) : null}
     </main>
   );
 }

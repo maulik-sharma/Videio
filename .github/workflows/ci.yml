@@ -93,6 +93,10 @@ jobs:
       - name: Edge serves the API and readiness
         run: curl --fail --silent --show-error http://localhost:8080/readyz
 
+      - name: End-to-end upload, transcode and DLQ smoke test
+        working-directory: backend
+        run: uv run pytest tests/e2e/test_smoke.py
+
       - name: Stack logs
         if: failure()
         run: docker compose -f compose.yaml -f compose.ci.yaml logs --no-color
@@ -111,6 +115,10 @@ jobs:
             context: backend
             file: backend/Dockerfile
             target: api
+          - image: videio-worker
+            context: backend
+            file: backend/Dockerfile
+            target: worker
           - image: videio-web
             context: .
             file: web/Dockerfile
