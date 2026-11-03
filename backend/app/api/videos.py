@@ -210,6 +210,10 @@ async def complete_video_upload(
     video.status = "uploaded"
     video.multipart_upload_id = None
     await session.commit()
+    # SQLAlchemy expires expression-based onupdate columns after this UPDATE.
+    # Refresh explicitly while still inside the async endpoint instead of
+    # letting response serialization trigger an implicit MissingGreenlet load.
+    await session.refresh(video)
     await mark_user_wrote(redis, user.id, settings.rw_flag_ttl_s)
     return _summary(video)
 
