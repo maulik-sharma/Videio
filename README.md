@@ -13,8 +13,9 @@ Live deployment: <https://videio.mauliksharma.org>
   refresh-token reuse detection, CSRF protection and rate limits.
 - Phase 2: direct SeaweedFS multipart uploads, video metadata, public IDs and
   the My videos page.
-- Phase 3: taskiq workers on RabbitMQ transcode uploads to HLS (360p/720p) with
-  retries, backoff and a dead-letter queue; a single scheduler runs the view
+- Phase 3: taskiq workers on RabbitMQ transcode uploads to an HLS ladder
+  (144p up to the original resolution, at most 2160p) with retries, backoff
+  and a dead-letter queue; a single scheduler runs the view
   counter flush, the stuck-job reaper and abandoned-upload cleanup; the public
   feed and the video page with an HLS player.
 

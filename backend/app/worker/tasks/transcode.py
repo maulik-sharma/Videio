@@ -21,9 +21,11 @@ from app.worker.ffmpeg import (
 from app.worker.locks import redis_lock
 from app.worker.runtime import get_resources
 
-# Longer than the worst-case job (two 15-minute renditions plus a thumbnail),
-# so a second delivery of the same video never runs alongside a live one.
-LOCK_TTL_MS = 40 * 60 * 1000
+# The worker extends this lock every minute while it transcodes, so a live job
+# keeps it however long it runs, and a dead worker's lock lapses within 3 min.
+LOCK_TTL_MS = 3 * 60 * 1000
+# A copy of the job that finds the lock taken checks back this much later.
+BUSY_RECHECK_S = 60
 
 EXHAUSTED_REASON = "Processing failed several times. Try uploading the video again."
 
@@ -90,9 +92,15 @@ async def mark_exhausted(message: TaskiqMessage, exception: BaseException) -> No
 async def transcode_video(video_id: int) -> None:
     """Transcode one uploaded original and publish deterministic HLS objects."""
     resources = await get_resources()
-    async with redis_lock(resources.redis, f"transcode:lock:{video_id}", LOCK_TTL_MS) as held:
+    lock = redis_lock(resources.redis, f"transcode:lock:{video_id}", LOCK_TTL_MS, heartbeat=True)
+    async with lock as held:
         if not held:
-            # Another worker is on this video right now; this copy is a duplicate.
+            # Someone holds the lock: either a live worker (then the re-check
+            # finds the video done and stops) or a worker that was just killed
+            # (then its lock lapses and the re-check picks the job up). Either
+            # way, check back shortly instead of dropping the job. This does not
+            # use up the retry budget.
+            await transcode_video.kicker().with_labels(delay=BUSY_RECHECK_S).kiq(video_id)
             return
         await _transcode(video_id)
 
@@ -105,10 +113,12 @@ async def _transcode(video_id: int) -> None:
             video = await session.scalar(
                 select(Video).where(Video.id == video_id).with_for_update()
             )
-            # Idempotency: finished, removed or not-yet-uploaded videos need no work.
+            # Idempotency: only uploaded videos, or ones a dead worker left
+            # mid-transcode, need work. Ready, failed, removed or not-yet-uploaded
+            # videos are left alone (re-run a failed one with `app.cli retranscode`).
             if video is None or video.removed_at is not None:
                 return
-            if video.status in {"ready", "pending_upload"}:
+            if video.status not in {"uploaded", "processing"}:
                 return
 
             last_attempt = await session.scalar(
@@ -151,14 +161,19 @@ async def _transcode(video_id: int) -> None:
             )
 
             rendition_data: dict[str, object] = {
-                rendition.name: {
-                    "playlist": f"{media_prefix}/{rendition.name}/index.m3u8",
-                    "height": min(rendition.height, probe.height),
-                    "bitrate_kbps": rendition.bitrate_kbps,
-                }
-                for rendition in renditions
+                "master": f"{media_prefix}/{master.name}",
+                "source": {"width": probe.width, "height": probe.height},
+                "ladder": [
+                    {
+                        "name": rendition.name,
+                        "width": rendition.width,
+                        "height": rendition.height,
+                        "bitrate_kbps": rendition.bitrate_kbps,
+                        "playlist": f"{media_prefix}/{rendition.name}/index.m3u8",
+                    }
+                    for rendition in renditions
+                ],
             }
-            rendition_data["master"] = f"{media_prefix}/{master.name}"
 
             async with resources.db.write_sessions() as session:
                 video = await session.get(Video, video_id, with_for_update=True)
