@@ -96,15 +96,16 @@ jobs:
           EXPECTED: ${{ needs.deploy.outputs.image_tag }}
         run: |
           # The webhook returns before the redeploy finishes, so poll until
-          # /healthz reports the version we just deployed (up to ~5 minutes).
+          # /readyz is 200 (primary, replica and Redis reachable) AND reports
+          # the version we just deployed (up to ~5 minutes).
           for attempt in $(seq 1 30); do
-            body=$(curl --silent --max-time 5 "$APP_URL/healthz" || true)
-            echo "attempt $attempt: ${body:-no response}"
+            body=$(curl --silent --fail --max-time 5 "$APP_URL/readyz" || true)
+            echo "attempt $attempt: ${body:-not ready}"
             if echo "$body" | grep -q "\"version\":\"$EXPECTED\""; then
-              echo "Live: $EXPECTED"
+              echo "Live and ready: $EXPECTED"
               exit 0
             fi
             sleep 10
           done
-          echo "::error::$APP_URL/healthz did not report $EXPECTED in time"
+          echo "::error::$APP_URL/readyz did not report $EXPECTED as ready in time"
           exit 1
