@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { useMe } from '../auth/session.js';
 
 function useApiHealth() {
@@ -33,11 +34,21 @@ export default function Home() {
   const { data: me } = useMe();
   return (
     <main className="page">
-      <h1>Nothing to watch yet</h1>
+      <h1>Videio</h1>
       <p className="muted">
-        Uploads, the feed and playback arrive in later phases. This page confirms the build and
-        deploy pipeline works end to end.
+        Upload a video directly to object storage. Transcoding and playback arrive in the next
+        phase.
       </p>
+      {me ? (
+        <div className="home-actions">
+          <Link className="button button-primary" to="/upload">
+            Upload a video
+          </Link>
+          <Link className="button" to="/my-videos">
+            My videos
+          </Link>
+        </div>
+      ) : null}
       <dl className="facts">
         <dt>API</dt>
         <dd>

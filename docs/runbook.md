@@ -67,19 +67,23 @@ Portainer stack is pasted compose text, so it does not update itself:
 
 ## Storage and queue rollout (one time)
 
-This adds SeaweedFS (S3) and RabbitMQ to the stack. The app does not use them
-yet (Phase 2 and 3 do), so the order of merging and updating does not matter,
-and no existing volume is touched.
+This adds SeaweedFS (S3) and RabbitMQ to the stack. Phase 2 uses SeaweedFS for
+browser uploads; Phase 3 will use RabbitMQ for transcoding. No existing volume
+is touched.
 
 1. In Portainer, open the `videio` stack and add the environment variables:
    - `S3_ACCESS_KEY` (`openssl rand -hex 16`), `S3_SECRET_KEY` and
      `RABBITMQ_PASSWORD` (each `openssl rand -hex 32`);
+   - `S3_PUBLIC_ENDPOINT_URL=https://s3.videio.mauliksharma.org` and
+     `APP_ORIGIN=https://videio.mauliksharma.org`;
    - `S3_PORT`, only if host port 8333 is already taken on the VPS;
    - `RABBITMQ_UI_BIND`, only to reach the management UI from the tailnet:
      set it to the VPS's Tailscale IP. It defaults to `127.0.0.1`.
 2. Paste the new `compose.prod.yaml` into the stack editor and update the
    stack with **Re-pull image** on.
 3. Check that `seaweedfs` and `rabbitmq` show as healthy.
+4. Check that the one-shot `storage-init` service exits successfully. It creates
+   the `uploads` and `media` buckets and applies the browser CORS policy.
 
 Notes:
 
@@ -100,6 +104,7 @@ Notes:
 ### 1. DNS
 
 An `A` record for `videio.mauliksharma.org` pointing at the VPS.
+Add an `A` record for `s3.videio.mauliksharma.org` pointing at the same VPS.
 
 ### 2. GHCR access for Portainer
 
@@ -224,6 +229,22 @@ The edge trusts `X-Forwarded-For` only from private address ranges
 Docker. If the logs show NPM's address instead of real client IPs, check
 which address NPM connects from and add it to `set_real_ip_from` in
 `infra/nginx/nginx.conf`.
+
+Create a second NPM proxy host for the browser-facing S3 endpoint:
+
+| Field | Value |
+| --- | --- |
+| Domain | `s3.videio.mauliksharma.org` |
+| Scheme / Forward host / port | `http` / VPS IP / `${S3_PORT}` |
+| SSL | Let's Encrypt, Force SSL, HTTP/2 |
+| Advanced | `client_max_body_size 0; proxy_request_buffering off; proxy_buffering off;` |
+
+Set the production variables `S3_PUBLIC_ENDPOINT_URL` to the exact HTTPS URL
+for that host and `APP_ORIGIN` to the HTTPS app URL. SigV4 signs the host and
+scheme, so the browser must use the same endpoint that was configured when the
+API generated its URLs. The storage-init service creates `uploads` and `media`
+and applies CORS with `ETag` exposed; change the environment value if the app
+origin changes.
 
 **Firewall:** ports published by Docker bypass `ufw`, so with
 `EDGE_BIND=0.0.0.0` the edge port is reachable from the internet over plain

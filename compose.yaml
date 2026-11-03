@@ -13,6 +13,11 @@ x-api-env: &api-env
   VIDEIO_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
   VIDEIO_REDIS_URL: redis://redis:6379/0
   VIDEIO_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  VIDEIO_S3_INTERNAL_ENDPOINT_URL: http://seaweedfs:8333
+  VIDEIO_S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:8333}
+  VIDEIO_S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+  VIDEIO_S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+  VIDEIO_APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
 
 services:
   edge:
@@ -41,12 +46,29 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
       core-replica:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks: [internal]
     restart: unless-stopped
+
+  # Creates the two S3 buckets and applies browser CORS before the API starts.
+  storage-init:
+    build:
+      context: backend
+      target: api
+    init: true
+    command: ["python", "-m", "app.storage_init"]
+    environment:
+      <<: *api-env
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    networks: [internal]
+    restart: "no"
 
   # One-shot: alembic upgrade head against the primary, then exit.
   migrate:

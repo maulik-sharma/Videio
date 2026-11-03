@@ -27,6 +27,19 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://redis:6379/0"
 
+    # S3-compatible object storage. The API uses the internal endpoint for
+    # server-side operations and the public endpoint when signing browser URLs.
+    s3_internal_endpoint_url: str = "http://localhost:8333"
+    s3_public_endpoint_url: str = "http://localhost:8333"
+    s3_access_key: SecretStr = SecretStr("videio-dev-access-key")
+    s3_secret_key: SecretStr = SecretStr("change-me-s3-secret")
+    s3_region: str = "us-east-1"
+    s3_upload_bucket: str = "uploads"
+    s3_media_bucket: str = "media"
+    s3_part_size_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    s3_presign_ttl_s: int = Field(default=60 * 60, gt=0)
+    app_origin: str = "http://localhost:8080"
+
     # Auth. The JWT secret signs access tokens; at least 32 characters.
     jwt_secret: SecretStr = Field(min_length=32)
     access_token_ttl_s: int = 15 * 60
@@ -42,6 +55,12 @@ class Settings(BaseSettings):
     register_window_s: int = 60
     login_limit_per_email: int = 5
     login_window_s: int = 60
+
+    # Upload abuse protection. The limit is deliberately per account so a
+    # logged-in user cannot exhaust every API replica independently.
+    upload_limit_per_user: int = 10
+    upload_window_s: int = 60 * 60
+    max_upload_size_bytes: int = 500_000_000
 
 
 @lru_cache
