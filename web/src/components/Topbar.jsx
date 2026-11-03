@@ -1,53 +1,49 @@
-import { Link, NavLink, useNavigate } from 'react-router';
-import { useLogout, useMe } from '../auth/session.js';
+import { Link } from 'react-router';
+import { useMe } from '../auth/session.js';
+import AccountMenu from './AccountMenu.jsx';
+import { MenuIcon, PlusIcon } from './icons.jsx';
+import ThemeToggle from './ThemeToggle.jsx';
+import Wordmark from './Wordmark.jsx';
 
-export default function Topbar() {
+export default function Topbar({ onMenu, menuLabel }) {
   const { data: me, isPending } = useMe();
-  const logout = useLogout();
-  const navigate = useNavigate();
 
   return (
     <header className="topbar">
-      <Link to="/" className="brand">
-        Videio
-      </Link>
-      <nav className="topbar-nav" aria-label="Main navigation">
-        <NavLink to="/my-videos" className="nav-link">
-          My videos
-        </NavLink>
-        {me ? (
-          <NavLink to="/upload" className="nav-link">
-            Upload
-          </NavLink>
-        ) : null}
-      </nav>
-      <nav className="topbar-actions" aria-label="Account">
+      <div className="topbar-start">
+        <button
+          type="button"
+          className="icon-button menu-button"
+          aria-label={menuLabel}
+          onClick={onMenu}
+        >
+          <MenuIcon />
+        </button>
+        <Link to="/" className="brand" aria-label="Videio home">
+          <Wordmark />
+        </Link>
+      </div>
+      <div className="topbar-actions">
+        <ThemeToggle />
         {isPending ? null : me ? (
           <>
-            <span className="topbar-user">
-              {me.display_name}
-              {me.role === 'admin' ? <span className="badge badge-inline">Admin</span> : null}
-            </span>
-            <button
-              type="button"
-              className="button button-quiet"
-              disabled={logout.isPending}
-              onClick={() => logout.mutate(undefined, { onSettled: () => navigate('/') })}
-            >
-              {logout.isPending ? 'Logging out…' : 'Log out'}
-            </button>
+            <Link to="/upload" className="button topbar-upload">
+              <PlusIcon />
+              <span>Upload</span>
+            </Link>
+            <AccountMenu me={me} />
           </>
         ) : (
           <>
-            <NavLink to="/login" className="nav-link">
+            <Link to="/login" className="button button-quiet topbar-login">
               Log in
-            </NavLink>
-            <NavLink to="/register" className="nav-link">
+            </Link>
+            <Link to="/register" className="button button-primary">
               Create account
-            </NavLink>
+            </Link>
           </>
         )}
-      </nav>
+      </div>
     </header>
   );
 }

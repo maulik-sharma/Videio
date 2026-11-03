@@ -28,7 +28,7 @@ from app.api.schemas import (
 from app.core.cursors import InvalidCursor, decode_cursor, encode_cursor
 from app.core.errors import AppError
 from app.core.ids import new_public_id
-from app.db.models import Video
+from app.db.models import User, Video
 from app.services import rate_limit
 from app.services.read_your_writes import mark_user_wrote
 from app.services.storage import StorageError, StorageVerificationError
@@ -45,9 +45,10 @@ def _video_ref_filter(video_ref: str) -> Any:
     return Video.public_id == video_ref
 
 
-def _summary(video: Video) -> VideoSummaryOut:
+def _summary(video: Video, owner_name: str) -> VideoSummaryOut:
     return VideoSummaryOut(
         id=video.id,
+        owner_name=owner_name,
         public_id=video.public_id,
         title=video.title,
         description=video.description,
@@ -192,7 +193,7 @@ async def complete_video_upload(
     # Retrying the browser's final request is safe after the database update.
     if video.status == "uploaded":
         await _enqueue_transcode(broker, video.id)
-        return _summary(video)
+        return _summary(video, user.display_name)
     if video.status != "pending_upload" or not video.multipart_upload_id:
         raise AppError(409, "UPLOAD_NOT_ACTIVE", "This upload is no longer active.")
 
@@ -243,7 +244,7 @@ async def complete_video_upload(
     await session.refresh(video)
     await mark_user_wrote(redis, user.id, settings.rw_flag_ttl_s)
     await _enqueue_transcode(broker, video.id)
-    return _summary(video)
+    return _summary(video, user.display_name)
 
 
 @router.get("/me/videos", response_model=VideoPageOut)
@@ -261,19 +262,23 @@ async def my_videos(
         except InvalidCursor as exc:
             raise AppError(400, "INVALID_CURSOR", "That pagination cursor is invalid.") from exc
 
-    statement = select(Video).where(Video.owner_id == user.id)
+    statement = select(Video, User.display_name).join(User, User.id == Video.owner_id)
+    statement = statement.where(Video.owner_id == user.id)
     if decoded is not None:
         statement = statement.where(
             tuple_(Video.created_at, Video.id) < tuple_(decoded.created_at, decoded.video_id)
         )
     statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(limit + 1)
-    videos = list((await session.scalars(statement)).all())
+    rows = list((await session.execute(statement)).tuples().all())
     next_cursor = None
-    if len(videos) > limit:
-        videos.pop()
-        last = videos[-1]
+    if len(rows) > limit:
+        rows.pop()
+        last = rows[-1][0]
         next_cursor = encode_cursor(last.created_at, last.id)
-    return VideoPageOut(items=[_summary(video) for video in videos], next_cursor=next_cursor)
+    return VideoPageOut(
+        items=[_summary(video, owner_name) for video, owner_name in rows],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get("/feed", response_model=VideoPageOut)
@@ -290,29 +295,43 @@ async def public_feed(
         except InvalidCursor as exc:
             raise AppError(400, "INVALID_CURSOR", "That pagination cursor is invalid.") from exc
 
-    statement = select(Video).where(
-        Video.visibility == "public",
-        Video.status == "ready",
-        Video.removed_at.is_(None),
+    statement = (
+        select(Video, User.display_name)
+        .join(User, User.id == Video.owner_id)
+        .where(
+            Video.visibility == "public",
+            Video.status == "ready",
+            Video.removed_at.is_(None),
+        )
     )
     if decoded is not None:
         statement = statement.where(
             tuple_(Video.created_at, Video.id) < tuple_(decoded.created_at, decoded.video_id)
         )
     statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(limit + 1)
-    videos = list((await session.scalars(statement)).all())
+    rows = list((await session.execute(statement)).tuples().all())
     next_cursor = None
-    if len(videos) > limit:
-        videos.pop()
-        last = videos[-1]
+    if len(rows) > limit:
+        rows.pop()
+        last = rows[-1][0]
         next_cursor = encode_cursor(last.created_at, last.id)
-    return VideoPageOut(items=[_summary(video) for video in videos], next_cursor=next_cursor)
+    return VideoPageOut(
+        items=[_summary(video, owner_name) for video, owner_name in rows],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get("/videos/{video_ref}", response_model=VideoSummaryOut)
 async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId) -> VideoSummaryOut:
     """Return metadata for a public/unlisted video or its owner's private video."""
-    video = await session.scalar(select(Video).where(_video_ref_filter(video_ref)))
+    row = (
+        await session.execute(
+            select(Video, User.display_name)
+            .join(User, User.id == Video.owner_id)
+            .where(_video_ref_filter(video_ref))
+        )
+    ).first()
+    video, owner_name = row.tuple() if row is not None else (None, "")
     if (
         video is None
         or video.removed_at is not None
@@ -321,7 +340,7 @@ async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId)
         raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
     if video.status != "ready" and video.owner_id != user_id:
         raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
-    return _summary(video)
+    return _summary(video, owner_name)
 
 
 @router.post("/videos/{video_ref}/view")
