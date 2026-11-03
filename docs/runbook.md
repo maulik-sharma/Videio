@@ -65,6 +65,36 @@ Portainer stack is pasted compose text, so it does not update itself:
 6. Register your account on the site and promote it (see Admin accounts).
    The System numbers are at `/api/admin/system`.
 
+## Storage and queue rollout (one time)
+
+This adds SeaweedFS (S3) and RabbitMQ to the stack. The app does not use them
+yet (Phase 2 and 3 do), so the order of merging and updating does not matter,
+and no existing volume is touched.
+
+1. In Portainer, open the `videio` stack and add the environment variables:
+   - `S3_ACCESS_KEY` (`openssl rand -hex 16`), `S3_SECRET_KEY` and
+     `RABBITMQ_PASSWORD` (each `openssl rand -hex 32`);
+   - `S3_PORT`, only if host port 8333 is already taken on the VPS;
+   - `RABBITMQ_UI_BIND`, only to reach the management UI from the tailnet:
+     set it to the VPS's Tailscale IP. It defaults to `127.0.0.1`.
+2. Paste the new `compose.prod.yaml` into the stack editor and update the
+   stack with **Re-pull image** on.
+3. Check that `seaweedfs` and `rabbitmq` show as healthy.
+
+Notes:
+
+- The S3 port is published on `S3_BIND` (default all interfaces) because
+  browsers will upload to it through NPM. Docker-published ports bypass
+  `ufw`, so it is reachable from the internet, but every request must be
+  signed with the S3 keys. Anonymous requests get 403.
+- `RABBITMQ_PASSWORD` is applied only when RabbitMQ first initialises its
+  volume. To change it later, run
+  `rabbitmqctl change_password videio <new>` in the container, then update
+  the variable.
+- If you bind the UI to the Tailscale IP, Tailscale must be up before
+  Docker starts the container, or the port fails to bind and the
+  container does not start.
+
 ## One-time setup
 
 ### 1. DNS
