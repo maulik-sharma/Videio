@@ -88,6 +88,10 @@ services:
       target: api
     init: true
     command: ["taskiq", "scheduler", "app.worker.scheduler:scheduler", "--skip-first-run"]
+    # The api image's healthcheck polls :8000/healthz, which the scheduler does
+    # not serve; it would always be unhealthy and fail `up --wait`.
+    healthcheck:
+      disable: true
     environment:
       <<: *api-env
       VIDEIO_ENV: dev

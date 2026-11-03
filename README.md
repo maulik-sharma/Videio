@@ -13,9 +13,13 @@ Live deployment: <https://videio.mauliksharma.org>
   refresh-token reuse detection, CSRF protection and rate limits.
 - Phase 2: direct SeaweedFS multipart uploads, video metadata, public IDs and
   the My videos page.
+- Phase 3: taskiq workers on RabbitMQ transcode uploads to HLS (360p/720p) with
+  retries, backoff and a dead-letter queue; a single scheduler runs the view
+  counter flush, the stuck-job reaper and abandoned-upload cleanup; the public
+  feed and the video page with an HLS player.
 
-Transcoding, playback, feed pagination, private-media authorization, caching
-and counters are planned for later phases.
+Private-media authorization, admin moderation, caching and load tests are
+planned for later phases.
 
 ## Run locally
 
@@ -68,9 +72,11 @@ FastAPI service. FastAPI writes metadata to the PostgreSQL primary and reads
 the authenticated user's video list from the replica while Redis provides
 read-your-writes routing. SeaweedFS exposes S3-compatible `uploads` and
 `media` buckets. The browser receives presigned multipart URLs and uploads
-directly to SeaweedFS; the API never proxies the file bytes. RabbitMQ is
-provisioned for the Phase 3 transcoding path, when worker containers will
-consume its jobs.
+directly to SeaweedFS; the API never proxies the file bytes. Completing an
+upload queues a `transcode_video` task on RabbitMQ. Worker containers run
+ffmpeg, write HLS renditions and a thumbnail to the `media` bucket, and the
+edge serves them from an nginx cache under `/media/`. Scale workers with
+`docker compose up -d --scale worker=3`.
 
 See [`docs/design.md`](docs/design.md) for design trade-offs and
 [`docs/runbook.md`](docs/runbook.md) for deployment, rollback and Nginx Proxy
@@ -78,8 +84,7 @@ Manager setup.
 
 ## Future work
 
-Transcoding to HLS, public feed and playback, private media authorization,
-admin takedown, cache-aside reads, write-behind view counters and load-test
+Private media authorization, admin takedown, cache-aside reads and load-test
 results are future work. Comments, likes, subscriptions, search,
 recommendations, email verification, password reset and live streaming remain
 out of scope.

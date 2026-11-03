@@ -10,7 +10,15 @@ from typing import Any
 
 
 class PermanentTranscodeError(RuntimeError):
-    """The source cannot produce a valid video and should not be retried."""
+    """The source cannot produce a valid video and should not be retried.
+
+    `str(exc)` is shown to the uploader; `detail` (e.g. ffmpeg's stderr) is only
+    recorded on the transcode attempt, since it contains worker paths.
+    """
+
+    def __init__(self, message: str, detail: str | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or message
 
 
 class RetryableTranscodeError(RuntimeError):
@@ -31,7 +39,8 @@ class Rendition:
     bitrate_kbps: int
 
 
-async def _run(command: list[str], *, timeout_s: float) -> tuple[bytes, bytes]:
+async def _run(command: list[str], *, timeout_s: float, rejected: str) -> tuple[bytes, bytes]:
+    """Run a media command. `rejected` is the user-facing reason if it fails."""
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -47,9 +56,12 @@ async def _run(command: list[str], *, timeout_s: float) -> tuple[bytes, bytes]:
     except OSError as exc:
         raise RetryableTranscodeError("The media command could not be started.") from exc
 
+    detail = stderr.decode(errors="replace")[-2000:]
+    if process.returncode is not None and process.returncode < 0:
+        # Killed by a signal (e.g. the OOM killer): the worker's fault, not the file's.
+        raise RetryableTranscodeError(f"{command[0]} was killed by signal {-process.returncode}.")
     if process.returncode != 0:
-        detail = stderr.decode(errors="replace")[-2000:]
-        raise PermanentTranscodeError(detail or "The media command rejected the source.")
+        raise PermanentTranscodeError(rejected, detail)
     return stdout, stderr
 
 
@@ -66,6 +78,7 @@ async def probe_media(source: Path) -> MediaProbe:
             str(source),
         ],
         timeout_s=60,
+        rejected="The file could not be read as a video.",
     )
     try:
         payload: dict[str, Any] = json.loads(stdout)
@@ -75,7 +88,7 @@ async def probe_media(source: Path) -> MediaProbe:
             None,
         )
         if not isinstance(video_stream, dict):
-            raise PermanentTranscodeError("The file has no usable video stream.")
+            raise PermanentTranscodeError("The file has no video stream.")
         duration_raw = payload.get("format", {}).get("duration")
         if duration_raw is None:
             duration_raw = video_stream.get("duration")
@@ -83,7 +96,7 @@ async def probe_media(source: Path) -> MediaProbe:
         width = int(video_stream["width"])
         height = int(video_stream["height"])
     except (KeyError, TypeError, ValueError, StopIteration, json.JSONDecodeError) as exc:
-        raise PermanentTranscodeError("The file has no usable video stream.") from exc
+        raise PermanentTranscodeError("The file has no readable video stream.") from exc
 
     if duration <= 0:
         raise PermanentTranscodeError("The file has no usable duration.")
@@ -116,6 +129,12 @@ def hls_command(source: Path, output: Path, rendition: Rendition) -> list[str]:
         "libx264",
         "-preset",
         "veryfast",
+        # 8-bit 4:2:0: what browsers decode (10-bit or 4:4:4 sources would not play).
+        "-pix_fmt",
+        "yuv420p",
+        # A keyframe every 6 s, so every segment is a clean 6 s cut.
+        "-force_key_frames",
+        "expr:gte(t,n_forced*6)",
         "-b:v",
         f"{rendition.bitrate_kbps}k",
         "-maxrate",
@@ -177,10 +196,15 @@ async def transcode_hls(
         await _run(
             hls_command(source, workdir / rendition.name / "index.m3u8", rendition),
             timeout_s=15 * 60,
+            rejected="The video could not be converted.",
         )
 
     master = workdir / "master.m3u8"
     write_master_playlist(master, probe, renditions)
     thumbnail = workdir / "thumbnail.jpg"
-    await _run(thumbnail_command(source, thumbnail, probe.duration_s), timeout_s=5 * 60)
+    await _run(
+        thumbnail_command(source, thumbnail, probe.duration_s),
+        timeout_s=5 * 60,
+        rejected="A thumbnail could not be made from the video.",
+    )
     return master, thumbnail, renditions

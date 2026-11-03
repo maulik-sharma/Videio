@@ -3,6 +3,7 @@ import { api } from './client.js';
 
 const MY_VIDEOS = ['my-videos'];
 const FEED = ['feed'];
+const IN_FLIGHT = new Set(['uploaded', 'processing']);
 
 export function useMyVideos(enabled = true) {
   return useInfiniteQuery({
@@ -16,6 +17,13 @@ export function useMyVideos(enabled = true) {
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     retry: false,
     enabled,
+    // Poll while anything is still on its way to ready or failed.
+    refetchInterval: (query) =>
+      query.state.data?.pages.some((page) =>
+        page.items.some((video) => IN_FLIGHT.has(video.status)),
+      )
+        ? 3000
+        : false,
   });
 }
 

@@ -163,8 +163,9 @@ bytes pass through the edge nginx, which streams them without buffering.
 
 **How to see it.** Log in, open **Upload**, select a supported video and watch
 the browser Network panel: the JSON requests go to `/api`, while the large PUT
-requests go to `/uploads/…`, which the edge hands to SeaweedFS. The **My videos** page shows the row as
-`Pending upload` until the completion request changes it to `Uploaded`.
+requests go to `/uploads/…`, which the edge hands to SeaweedFS. The **My
+videos** page shows the row as `Pending upload` until the completion request
+changes it to `Uploaded`.
 
 ## Video metadata and public IDs
 
@@ -174,3 +175,114 @@ hard to guess without forcing every internal query to use a string key. My
 videos uses `(created_at, id)` keyset pagination; it never uses `OFFSET`, so
 walking through older uploads does not make the database scan and discard every
 previous page.
+The public feed (`GET /api/feed`) uses the same keyset pattern over public,
+ready, not-removed videos, reads from the replica, and is served by the partial
+index `(created_at desc) where visibility='public' and status='ready' and
+removed_at is null`.
+
+## Async transcoding with a queue
+
+**What.** `POST /api/videos/{id}/complete` publishes `transcode_video(video_id)`
+to RabbitMQ (taskiq with `taskiq-aio-pika`) and returns 202. Worker containers
+consume the `videio.tasks` quorum queue with `qos=1` and acknowledge a message
+only after the task has run (`--ack-type when_executed`). The worker probes the
+original with `ffprobe`, builds a 360p and (for sources at least 720 px tall) a
+720p HLS rendition with 6-second segments, writes a master playlist and a
+thumbnail, and uploads them to the `media` bucket under `videos/{publicId}/`.
+The edge serves them at `/media/{publicId}/…` through an nginx cache.
+
+**Why.** Transcoding takes seconds to minutes of CPU. Doing it inside an API
+request would tie up a worker for the whole time and fail the upload whenever
+the request timed out. A queue lets the API answer at once, keeps the job if a
+worker dies (an unacknowledged message returns to the queue), and lets workers
+scale separately from the API.
+
+**Trade-off.** The video is not playable the moment the upload finishes; the
+page shows "Processing" and polls every 3 seconds. There is one more service to
+run, and a message published just as RabbitMQ goes away can be lost. If the
+publish fails the API answers 503 and the row stays `uploaded`, so the
+browser's retry of `/complete` publishes again; the reaper (below) covers a
+worker dying mid-job.
+
+**How to see it.** Open the RabbitMQ UI (`http://localhost:15672` in dev) during
+an upload: `videio.tasks` shows the message ready, then unacked while a worker
+holds it.
+
+## Horizontal worker scaling
+
+`docker compose up -d --scale worker=3`. Each worker runs one task at a time
+(`--workers 1`, prefetch 1), so RabbitMQ hands three uploads to three
+different workers and they transcode in parallel. In production each worker is
+capped at 1.5 CPUs and 1 GB. At Videio's size one worker is enough; a real
+system would scale workers on queue depth.
+
+## Retries with backoff, and the dead-letter queue
+
+**What.** The task tells apart two kinds of failure. A *permanent* one (no video
+stream, ffprobe cannot read the file, longer than 10 minutes) marks the video
+`failed` with a short reason and is not retried. A *temporary* one (storage or
+database unavailable, ffmpeg killed by a signal, a timeout) is retried by
+taskiq's `SmartRetryMiddleware` after about 10 s, 60 s and then 5 min (plus up
+to 10% jitter), using RabbitMQ's delay queue (`videio.tasks.delay`, a
+per-message TTL that dead-letters back into `videio.tasks`). When the last of
+the four attempts fails, the video is marked `failed` and the message is
+published to `transcode.dlq`. Permanent failures go to the DLQ too.
+
+taskiq acknowledges a failed task once its result is handled, so RabbitMQ never
+dead-letters it by itself. A small middleware (`FinalFailureDeadLetterMiddleware`)
+publishes the original message to the DLQ on the final failure, using the same
+rule the retry middleware uses to decide whether another attempt will follow.
+
+**Why.** Most transient failures fix themselves within seconds or minutes, so a
+few spaced-out retries turn them into a short delay instead of a failed upload.
+Retrying bad input would only waste CPU. The DLQ keeps every message that gave
+up, with the error in its headers, so it can be inspected and replayed instead
+of disappearing into a log.
+
+**Trade-off.** Each attempt records a row in `transcode_attempts`, and ffmpeg's
+error output is kept there, while the uploader only sees a short reason. A
+video whose only problem is a long outage waits about six minutes before it is
+marked failed.
+
+**How to see it.** Upload a file that is not a video (`head -c 1000000
+/dev/urandom > junk.mp4`). It ends `Failed: The file could not be read as a
+video.`, and `transcode.dlq` in the RabbitMQ UI gains a message.
+
+## Idempotent consumers
+
+A message can be delivered more than once (a worker dies after finishing but
+before acknowledging, the reaper re-kicks, or `/complete` is retried). The task
+is safe to run twice:
+
+- it returns at once for videos that are already `ready`, removed or not yet
+  uploaded;
+- it holds a Redis lock `transcode:lock:{id}` (40 minutes, longer than the
+  worst-case job) for the whole job, so a second copy arriving meanwhile does
+  nothing;
+- outputs go to deterministic keys, so a re-run overwrites instead of
+  duplicating. The master playlist is uploaded last, so it never points at a
+  rendition that is missing.
+
+## Graceful shutdown
+
+On SIGTERM `taskiq worker` stops taking new messages and waits up to 300 s for
+the running task (`--wait-tasks-timeout 300`); compose gives the container
+310 s (`stop_grace_period`) before killing it. A redeploy during a transcode
+therefore finishes the job. If the worker is killed anyway, the message was
+never acknowledged and RabbitMQ redelivers it.
+
+## Scheduled tasks
+
+One `scheduler` container (`taskiq scheduler`) only puts periodic tasks on the
+queue; workers run them. It must run exactly once, or every task runs twice.
+Each task also takes a short Redis lock, so overlapping runs do nothing.
+
+- **Every minute:** flush view counts from Redis (`views:{id}`, `views:dirty`)
+  into Postgres in one `UPDATE`.
+- **Every 5 minutes, the reaper:** a video `processing` for over 20 minutes
+  whose transcode lock has expired was abandoned by a worker that died. It goes
+  back to `uploaded` and is re-kicked. Checking the lock means a long but live
+  transcode is never started twice. After four recorded attempts the video is
+  marked failed instead, so a file that crashes workers is not retried forever.
+- **Every hour:** delete rows still `pending_upload` after 24 hours and abort
+  their multipart uploads.

@@ -422,6 +422,13 @@ progress {
   font-size: 12px;
 }
 
+.video-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: var(--bg);
+}
+
 .video-row-main {
   min-width: 0;
 }

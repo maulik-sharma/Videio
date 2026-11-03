@@ -57,14 +57,16 @@ function HlsPlayer({ source }) {
 export default function VideoPage() {
   const { publicId } = useParams();
   const video = useVideo(publicId);
-  const countView = useCountVideoView();
-  const counted = useRef(false);
+  // The id of the last video counted. The router reuses this component when
+  // moving between videos, so a plain boolean would skip every later video.
+  const counted = useRef(null);
   const data = video.data;
+  const { mutate: countView } = useCountVideoView();
 
   useEffect(() => {
-    if (data?.status === 'ready' && !counted.current) {
-      counted.current = true;
-      countView.mutate(publicId);
+    if (data?.status === 'ready' && counted.current !== publicId) {
+      counted.current = publicId;
+      countView(publicId);
     }
   }, [countView, data?.status, publicId]);
 

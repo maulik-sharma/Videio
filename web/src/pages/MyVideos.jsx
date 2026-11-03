@@ -49,9 +49,13 @@ export default function MyVideos() {
         <div className="video-list">
           {items.map((video) => (
             <article className="video-row" key={video.id}>
-              <div className="video-placeholder" aria-hidden="true">
-                {video.status === 'ready' ? 'Ready' : '—'}
-              </div>
+              {video.thumbnail_url ? (
+                <img className="video-thumb" src={video.thumbnail_url} alt="" />
+              ) : (
+                <div className="video-placeholder" aria-hidden="true">
+                  —
+                </div>
+              )}
               <div className="video-row-main">
                 <h2>
                   {video.status === 'ready' ? (
@@ -64,6 +68,9 @@ export default function MyVideos() {
                 <div className="video-meta">
                   <span className={`status status-${video.status}`}>
                     {STATUS_LABELS[video.status] ?? video.status}
+                    {video.status === 'failed' && video.failure_reason
+                      ? `: ${video.failure_reason}`
+                      : null}
                   </span>
                   <span>{video.visibility}</span>
                   <span>{formatDate(video.created_at)}</span>

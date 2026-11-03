@@ -32,6 +32,7 @@ from app.db.models import Video
 from app.services import rate_limit
 from app.services.read_your_writes import mark_user_wrote
 from app.services.storage import StorageError, StorageVerificationError
+from app.worker.broker import VideioBroker
 from app.worker.tasks.transcode import transcode_video
 
 router = APIRouter(prefix="/api", tags=["videos"])
@@ -74,6 +75,20 @@ def _storage_unavailable() -> AppError:
         "STORAGE_UNAVAILABLE",
         "Object storage is temporarily unavailable. Try again shortly.",
     )
+
+
+async def _enqueue_transcode(broker: VideioBroker, video_id: int) -> None:
+    """Publish the transcode job. On failure the row stays `uploaded`, so the
+    browser's retry of /complete publishes it again (the task is idempotent)."""
+    unavailable = AppError(
+        503, "QUEUE_UNAVAILABLE", "Video processing is temporarily unavailable. Try again."
+    )
+    if broker.write_channel is None or broker.write_channel.is_closed:
+        raise unavailable
+    try:
+        await transcode_video.kiq(video_id)
+    except Exception as exc:
+        raise unavailable from exc
 
 
 @router.post("/videos", response_model=VideoUploadOut, status_code=status.HTTP_201_CREATED)
@@ -176,9 +191,7 @@ async def complete_video_upload(
 
     # Retrying the browser's final request is safe after the database update.
     if video.status == "uploaded":
-        if broker.write_channel is None or broker.write_channel.is_closed:
-            raise AppError(503, "QUEUE_UNAVAILABLE", "Video processing is temporarily unavailable.")
-        await transcode_video.kiq(video.id)
+        await _enqueue_transcode(broker, video.id)
         return _summary(video)
     if video.status != "pending_upload" or not video.multipart_upload_id:
         raise AppError(409, "UPLOAD_NOT_ACTIVE", "This upload is no longer active.")
@@ -229,9 +242,7 @@ async def complete_video_upload(
     # letting response serialization trigger an implicit MissingGreenlet load.
     await session.refresh(video)
     await mark_user_wrote(redis, user.id, settings.rw_flag_ttl_s)
-    if broker.write_channel is None or broker.write_channel.is_closed:
-        raise AppError(503, "QUEUE_UNAVAILABLE", "Video processing is temporarily unavailable.")
-    await transcode_video.kiq(video.id)
+    await _enqueue_transcode(broker, video.id)
     return _summary(video)
 
 

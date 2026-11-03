@@ -99,6 +99,53 @@ Notes:
   Docker starts the container, or the port fails to bind and the
   container does not start.
 
+## Phase 3 rollout (one time)
+
+Phase 3 adds the `worker` (a new image, `videio-worker`) and the `scheduler`,
+and the API now connects to RabbitMQ at startup. The stack needs no new
+variables (it reuses `RABBITMQ_USER` and `RABBITMQ_PASSWORD`), but the new API
+image cannot start with the old stack definition, so:
+
+1. Merge the Phase 3 PR. CI pushes `videio-api`, `videio-web` and, for the
+   first time, `videio-worker`. The automatic Deploy is **expected to fail**:
+   the old stack gives the new API no RabbitMQ URL.
+2. If you made the GHCR packages public rather than giving Portainer a token,
+   make `videio-worker` public too (GitHub → Packages → `videio-worker` →
+   Package settings). A token with `read:packages` already covers it.
+3. Paste the new `compose.prod.yaml` into the stack editor. Set the stack
+   variable `IMAGE_TAG` to the `sha-` tag CI just pushed, and update with
+   **Re-pull image** on.
+4. Re-run the failed Deploy run (**Re-run failed jobs**). `/readyz` now also
+   reports `"rabbitmq": "ok"`.
+5. Upload a short video. It should go from `Processing` to `Ready` within a
+   minute and play on its page.
+
+## Transcode failures and the DLQ
+
+Every transcode that gives up (bad input, or four failed attempts) marks the
+video `failed` and leaves its message in the `transcode.dlq` queue, with the
+error in the message's `error` header. To look at it, open the RabbitMQ UI
+(see `RABBITMQ_UI_BIND`), **Queues → transcode.dlq → Get messages**, with
+*Ack mode: Nack message requeue true* so they stay in the queue.
+
+The full ffmpeg output for each attempt is in Postgres:
+
+```sql
+SELECT attempt, outcome, worker_id, started_at, error
+FROM transcode_attempts WHERE video_id = <id> ORDER BY attempt;
+```
+
+To process a video again after fixing the cause, run this in an `api`
+container console (the id is the one in the video's URL):
+
+```sh
+python -m app.cli retranscode 3kTq9bZx1A2
+```
+
+It sets the video back to `uploaded` and queues a fresh transcode with a full
+retry budget. The DLQ message itself is only a record; purge the queue when
+you no longer need it.
+
 ## One-time setup
 
 ### 1. DNS

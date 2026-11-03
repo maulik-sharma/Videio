@@ -84,6 +84,10 @@ services:
     image: ghcr.io/maulik-sharma/videio-api:${IMAGE_TAG:-latest}
     init: true
     command: ["taskiq", "scheduler", "app.worker.scheduler:scheduler", "--skip-first-run"]
+    # The api image's healthcheck polls :8000/healthz, which the scheduler does
+    # not serve; it would always be unhealthy and fail `up --wait`.
+    healthcheck:
+      disable: true
     environment:
       <<: *api-env
     deploy:
