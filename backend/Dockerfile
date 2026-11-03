@@ -26,10 +26,12 @@ RUN groupadd --system --gid 10001 videio \
 
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
+COPY alembic.ini ./
+COPY migrations ./migrations
 COPY app ./app
 USER videio
 
-# ---- api: FastAPI under uvicorn (also used by scheduler and migrate later) ----
+# ---- api: FastAPI under uvicorn; also runs migrate (python -m app.db.migrate) ----
 FROM runtime AS api
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
