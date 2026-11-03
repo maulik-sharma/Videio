@@ -1,0 +1,17 @@
+# Overrides for integration tests (CI and local): publish the databases and
+# Redis on localhost so pytest on the host can reach them.
+#   docker compose -f compose.yaml -f compose.ci.yaml up -d --build --wait
+
+services:
+  api:
+    environment:
+      VIDEIO_ENV: ci
+  core-primary:
+    ports: ["127.0.0.1:55432:5432"]
+    networks: [internal, public]
+  core-replica:
+    ports: ["127.0.0.1:55433:5432"]
+    networks: [internal, public]
+  redis:
+    ports: ["127.0.0.1:56379:6379"]
+    networks: [internal, public]

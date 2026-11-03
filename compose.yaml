@@ -1,8 +1,18 @@
 # Local development: the full stack, built from source.
 #   cp .env.example .env && docker compose up --build
 #   open http://localhost:8080
+#
+# Integration tests also publish the databases and Redis on localhost:
+#   docker compose -f compose.yaml -f compose.ci.yaml up -d --build --wait
 
 name: videio
+
+x-api-env: &api-env
+  VIDEIO_DB_NAME: ${POSTGRES_DB:-videio}
+  VIDEIO_DB_USER: ${POSTGRES_USER:-videio}
+  VIDEIO_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  VIDEIO_REDIS_URL: redis://redis:6379/0
+  VIDEIO_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
 
 services:
   edge:
@@ -24,16 +34,55 @@ services:
       target: api
     init: true
     environment:
+      <<: *api-env
       VIDEIO_ENV: dev
+      # Plain http://localhost in dev, so cookies cannot be Secure-only.
+      VIDEIO_COOKIE_SECURE: "false"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      core-replica:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks: [internal]
     restart: unless-stopped
 
+  # One-shot: alembic upgrade head against the primary, then exit.
+  migrate:
+    build:
+      context: backend
+      target: api
+    init: true
+    command: ["python", "-m", "app.db.migrate"]
+    environment:
+      <<: *api-env
+    depends_on:
+      core-primary:
+        condition: service_healthy
+    networks: [internal]
+    restart: "no"
+
   core-primary:
     image: postgres:17
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=5
+      # The replica's slot makes the primary keep WAL until the replica has it;
+      # cap that so a long-dead replica cannot fill the disk.
+      - -c
+      - max_slot_wal_keep_size=1GB
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-videio}
       POSTGRES_USER: ${POSTGRES_USER:-videio}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD in .env}
+    configs:
+      - source: primary-replication-init
+        target: /docker-entrypoint-initdb.d/10-replication.sh
     volumes:
       - core-primary-data:/var/lib/postgresql/data
     healthcheck:
@@ -44,6 +93,79 @@ services:
     networks: [internal]
     restart: unless-stopped
 
+  core-replica:
+    image: postgres:17
+    entrypoint: ["bash", "/usr/local/bin/replica-entrypoint.sh"]
+    command: ["postgres", "-c", "hot_standby=on", "-c", "cluster_name=core-replica"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-videio}
+      POSTGRES_DB: ${POSTGRES_DB:-videio}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD in .env}
+    configs:
+      - source: replica-entrypoint
+        target: /usr/local/bin/replica-entrypoint.sh
+    volumes:
+      - core-replica-data:/var/lib/postgresql/data
+    depends_on:
+      core-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    networks: [internal]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # AOF persistence: refresh tokens survive a Redis restart, so users stay logged in.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+    restart: unless-stopped
+
+# Replication scripts, inline so the production stack (pasted into Portainer)
+# needs no files on the VPS. Keep this block identical in compose.prod.yaml;
+# CI fails if the two drift. `$$` is a literal `$` for the shell at runtime.
+configs:
+  # Runs once, when the primary's data directory is first initialised.
+  primary-replication-init:
+    content: |
+      # Sourced by the postgres image's entrypoint during first-time init.
+      psql -v ON_ERROR_STOP=1 \
+        -v replication_password="$$REPLICATION_PASSWORD" \
+        --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" <<'EOSQL'
+      CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD :'replication_password';
+      SELECT pg_create_physical_replication_slot('core_replica');
+      EOSQL
+      echo "host replication replicator all scram-sha-256" >> "$$PGDATA/pg_hba.conf"
+
+  # On first start (empty data dir), clone the primary; then run as a hot standby.
+  replica-entrypoint:
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+        echo "core-replica: no data yet, cloning core-primary with pg_basebackup"
+        mkdir -p "$$PGDATA"
+        rm -rf "$${PGDATA:?}"/*
+        chown postgres:postgres "$$PGDATA"
+        chmod 700 "$$PGDATA"
+        # -R writes standby.signal + primary_conninfo, so Postgres starts as a standby.
+        gosu postgres env PGPASSWORD="$$REPLICATION_PASSWORD" \
+          pg_basebackup -h core-primary -U replicator -D "$$PGDATA" \
+            -R -X stream -S core_replica
+      fi
+      exec docker-entrypoint.sh "$$@"
+
 networks:
   # Only the edge is reachable from outside; everything else stays internal.
   public: {}
@@ -52,3 +174,5 @@ networks:
 
 volumes:
   core-primary-data: {}
+  core-replica-data: {}
+  redis-data: {}

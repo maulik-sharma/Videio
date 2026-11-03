@@ -57,10 +57,48 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run format:check
+      - run: npm test
       - run: npm run build
 
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          working-directory: backend
+          enable-cache: true
+
+      - name: Prepare .env
+        run: cp .env.example .env
+
+      # The replication scripts are inlined in both compose files (Portainer has
+      # no repo files to mount), so make sure the two copies never drift apart.
+      - name: Check compose.yaml and compose.prod.yaml share the same configs
+        run: |
+          diff \
+            <(docker compose -f compose.yaml config --format json | jq -S .configs) \
+            <(docker compose -f compose.prod.yaml config --format json | jq -S .configs)
+
+      # Full stack: primary + replica, Redis, the migrate job, API and edge.
+      - name: Start the stack
+        run: docker compose -f compose.yaml -f compose.ci.yaml up -d --build --wait
+
+      - name: Run integration tests
+        working-directory: backend
+        run: |
+          uv sync --frozen
+          uv run pytest tests/integration
+
+      - name: Edge serves the API and readiness
+        run: curl --fail --silent --show-error http://localhost:8080/readyz
+
+      - name: Stack logs
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.ci.yaml logs --no-color
+
   build-images:
-    needs: [backend-lint, unit-tests, web-lint]
+    needs: [backend-lint, unit-tests, web-lint, integration-tests]
     runs-on: ubuntu-latest
     permissions:
       contents: read

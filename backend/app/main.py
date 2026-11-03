@@ -1,12 +1,26 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
-from pydantic import BaseModel
+from redis.asyncio import Redis
 
+from app.api import admin, auth, health, users
 from app.core.config import get_settings
+from app.core.errors import install_error_handlers
+from app.core.middleware import CsrfHeaderMiddleware, RequestIdMiddleware
+from app.db.engines import Database
 
 
-class Health(BaseModel):
-    status: str
-    version: str
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    app.state.db = Database.from_settings(settings)
+    app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    try:
+        yield
+    finally:
+        await app.state.redis.aclose()
+        await app.state.db.dispose()
 
 
 def create_app() -> FastAPI:
@@ -17,13 +31,17 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         redoc_url=None,
         openapi_url="/api/openapi.json",
+        lifespan=lifespan,
     )
+    install_error_handlers(app)
+    # Added last runs first: the request id wraps everything, including CSRF rejections.
+    app.add_middleware(CsrfHeaderMiddleware)
+    app.add_middleware(RequestIdMiddleware)
 
-    @app.get("/healthz", tags=["ops"])
-    async def healthz() -> Health:
-        """Liveness: the process is up and serving requests. Checks no dependencies."""
-        return Health(status="ok", version=settings.version)
-
+    app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(users.router)
+    app.include_router(admin.router)
     return app
 
 

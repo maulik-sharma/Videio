@@ -6,6 +6,9 @@
   --muted: #71717a;
   --ok: #15803d;
   --error: #b91c1c;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --focus: #2563eb;
 
   font-family:
     system-ui,
@@ -30,6 +33,9 @@
     --muted: #a1a1aa;
     --ok: #4ade80;
     --error: #f87171;
+    --accent: #3b82f6;
+    --accent-text: #ffffff;
+    --focus: #60a5fa;
   }
 }
 
@@ -44,6 +50,8 @@ body {
 .topbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   height: 48px;
   padding: 0 16px;
   border-bottom: 1px solid var(--border);
@@ -52,6 +60,8 @@ body {
 
 .brand {
   font-weight: 600;
+  color: inherit;
+  text-decoration: none;
 }
 
 .page {
@@ -101,4 +111,129 @@ h1 {
 
 .badge-error {
   color: var(--error);
+}
+
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.topbar-user {
+  color: var(--muted);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.nav-link {
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.nav-link:hover {
+  background: var(--bg);
+}
+
+.nav-link.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.page-narrow {
+  max-width: 360px;
+}
+
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+}
+
+.field label {
+  font-weight: 500;
+}
+
+.field input {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.field input[aria-invalid='true'] {
+  border-color: var(--error);
+}
+
+.field-hint,
+.field-error {
+  margin: 0;
+  font-size: 12px;
+}
+
+.field-hint {
+  color: var(--muted);
+}
+
+.field-error {
+  color: var(--error);
+}
+
+.form-error {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--error);
+  border-radius: 4px;
+  color: var(--error);
+}
+
+.button {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+
+.button-quiet {
+  border-color: transparent;
+  background: transparent;
+}
+
+.button-quiet:hover:not(:disabled) {
+  border-color: var(--border);
+}
+
+.badge-inline {
+  margin-left: 8px;
 }
