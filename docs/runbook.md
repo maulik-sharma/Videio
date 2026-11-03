@@ -74,8 +74,8 @@ is touched.
 1. In Portainer, open the `videio` stack and add the environment variables:
    - `S3_ACCESS_KEY` (`openssl rand -hex 16`), `S3_SECRET_KEY` and
      `RABBITMQ_PASSWORD` (each `openssl rand -hex 32`);
-   - `S3_PUBLIC_ENDPOINT_URL=https://s3.videio.mauliksharma.org` and
-     `APP_ORIGIN=https://videio.mauliksharma.org`;
+   - `APP_ORIGIN=https://videio.mauliksharma.org`. Upload URLs are signed
+     for this host, so it must match the address bar exactly;
    - `S3_PORT`, only if host port 8333 is already taken on the VPS;
    - `RABBITMQ_UI_BIND`, only to reach the management UI from the tailnet:
      set it to the VPS's Tailscale IP. It defaults to `127.0.0.1`.
@@ -87,10 +87,10 @@ is touched.
 
 Notes:
 
-- The S3 port is published on `S3_BIND` (default all interfaces) because
-  browsers will upload to it through NPM. Docker-published ports bypass
-  `ufw`, so it is reachable from the internet, but every request must be
-  signed with the S3 keys. Anonymous requests get 403.
+- Browsers upload through the edge: `PUT /uploads/…` on the app's own domain
+  goes straight to SeaweedFS (only `PUT`; anything else gets 403). No extra
+  DNS record, certificate, NPM host or CORS is involved. The S3 port itself is
+  published on `S3_BIND`, loopback by default, only for debugging on the VPS.
 - `RABBITMQ_PASSWORD` is applied only when RabbitMQ first initialises its
   volume. To change it later, run
   `rabbitmqctl change_password videio <new>` in the container, then update
@@ -104,7 +104,6 @@ Notes:
 ### 1. DNS
 
 An `A` record for `videio.mauliksharma.org` pointing at the VPS.
-Add an `A` record for `s3.videio.mauliksharma.org` pointing at the same VPS.
 
 ### 2. GHCR access for Portainer
 
@@ -222,29 +221,13 @@ echo | openssl s_client -connect 100.99.220.35:9443 2>/dev/null \
 | Domain | `videio.mauliksharma.org` |
 | Scheme / Forward host / port | `http` / VPS IP / `EDGE_PORT` |
 | SSL | Let's Encrypt, Force SSL, HTTP/2 |
-| Advanced | `client_max_body_size 10m;` |
+| Advanced | `client_max_body_size 16m;` (uploads arrive as 10 MiB parts) |
 
 The edge trusts `X-Forwarded-For` only from private address ranges
 (`10/8`, `172.16/12`, `192.168/16`), which covers NPM reaching it through
 Docker. If the logs show NPM's address instead of real client IPs, check
 which address NPM connects from and add it to `set_real_ip_from` in
 `infra/nginx/nginx.conf`.
-
-Create a second NPM proxy host for the browser-facing S3 endpoint:
-
-| Field | Value |
-| --- | --- |
-| Domain | `s3.videio.mauliksharma.org` |
-| Scheme / Forward host / port | `http` / VPS IP / `${S3_PORT}` |
-| SSL | Let's Encrypt, Force SSL, HTTP/2 |
-| Advanced | `client_max_body_size 0; proxy_request_buffering off; proxy_buffering off;` |
-
-Set the production variables `S3_PUBLIC_ENDPOINT_URL` to the exact HTTPS URL
-for that host and `APP_ORIGIN` to the HTTPS app URL. SigV4 signs the host and
-scheme, so the browser must use the same endpoint that was configured when the
-API generated its URLs. The storage-init service creates `uploads` and `media`
-and applies CORS with `ETag` exposed; change the environment value if the app
-origin changes.
 
 **Firewall:** ports published by Docker bypass `ufw`, so with
 `EDGE_BIND=0.0.0.0` the edge port is reachable from the internet over plain

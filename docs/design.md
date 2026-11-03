@@ -153,13 +153,17 @@ state transition while SeaweedFS handles the bytes.
 through. Phase 2 records the multipart id and has the later maintenance phase
 own expiry cleanup; retries of the final request are idempotent after the row
 is marked `uploaded`. Presigned URLs are deliberately short-lived and tied to
-the exact public S3 host. Path-style addressing and a separate `s3.` host avoid
-the signature changing between the URL returned by the API and the URL reached
-by the browser.
+the exact public host. SigV4 signs the `Host` header, so the URLs are signed
+for the app's own origin (`APP_ORIGIN`) and the edge proxies `PUT /uploads/…`
+(path-style: the bucket is the first path segment) to SeaweedFS, forwarding the
+browser's `Host` unchanged. Keeping uploads on the app's origin means no second
+DNS name or certificate (a nested `s3.videio.` name is not covered by
+Cloudflare's free wildcard certificate) and no CORS. The cost is that upload
+bytes pass through the edge nginx, which streams them without buffering.
 
 **How to see it.** Log in, open **Upload**, select a supported video and watch
 the browser Network panel: the JSON requests go to `/api`, while the large PUT
-requests go directly to the S3 host. The **My videos** page shows the row as
+requests go to `/uploads/…`, which the edge hands to SeaweedFS. The **My videos** page shows the row as
 `Pending upload` until the completion request changes it to `Uploaded`.
 
 ## Video metadata and public IDs
