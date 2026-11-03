@@ -186,10 +186,10 @@ removed_at is null`.
 to RabbitMQ (taskiq with `taskiq-aio-pika`) and returns 202. Worker containers
 consume the `videio.tasks` quorum queue with `qos=1` and acknowledge a message
 only after the task has run (`--ack-type when_executed`). The worker probes the
-original with `ffprobe`, builds a 360p and (for sources at least 720 px tall) a
-720p HLS rendition with 6-second segments, writes a master playlist and a
-thumbnail, and uploads them to the `media` bucket under `videos/{publicId}/`.
-The edge serves them at `/media/{publicId}/…` through an nginx cache.
+original with `ffprobe`, encodes an HLS ladder with 6-second segments, writes
+a master playlist and a thumbnail, and uploads them to the `media` bucket under
+`videos/{publicId}/`. The edge serves them at `/media/{publicId}/…` through an
+nginx cache.
 
 **Why.** Transcoding takes seconds to minutes of CPU. Doing it inside an API
 request would tie up a worker for the whole time and fail the upload whenever
@@ -208,20 +208,64 @@ worker dying mid-job.
 an upload: `videio.tasks` shows the message ready, then unacked while a worker
 holds it.
 
+## The rendition ladder
+
+**What.** Every standard rung up to the source's resolution, plus the source's
+own resolution when it is not a standard rung. Rungs are named by the short
+side, so a portrait phone video is treated like its landscape twin:
+
+| Source | Rungs |
+| --- | --- |
+| 1080p | 1080p, 720p, 480p, 360p, 240p, 144p |
+| 900p (not standard) | 900p, 720p, 480p, 360p, 240p, 144p |
+| 4K or larger | 2160p, 1440p, 1080p, 720p, 480p, 360p, 240p, 144p |
+| below 144p | the original only |
+
+Nothing is upscaled, and 2160p is the ceiling. Bitrates come from a table
+(150 kbps at 144p up to 14 Mbps at 2160p) and are interpolated for an
+original between two rungs. Rotation metadata from phones is applied, so a
+video recorded upright stays upright.
+
+One ffmpeg run decodes the source once and `split`s it into one scaler and
+encoder per rung. Every rung forces a keyframe every 6 s, so segments are clean
+6-second cuts that line up across rungs and the player can switch quality at
+any segment boundary.
+
+**Why.** Small rungs keep playback going on a poor connection, and the top rung
+keeps the quality the uploader had. Decoding once instead of once per rung
+saves most of the work for a high-resolution source.
+
+**Trade-off.** More rungs cost more CPU, storage and memory: a 4K source
+encodes eight rungs, about 7.6 times the pixels of a single 1080p encode.
+ffmpeg would size its thread pools from the host's CPUs (16 on the dev
+machine), ignoring the container's limit, so the worker pins 2 decode threads
+and 1 thread per encoder; the rungs already run in parallel. With 1.5 CPUs a
+4K test clip went from 5.2 GB and 86 s with ffmpeg's defaults to 1.5 GB and
+42 s with these, which is why the production worker gets 3 GB.
+
+**Time limits.** The encode is stopped after (video length) x (pixels across
+all rungs, counted in 1080p frames) x 2 s, and never before 10 minutes. With
+1.5 CPUs a 1080p ladder ran at about 1.2 times the video's length and a 4K
+ladder at about 4.4 times, so this leaves about three times that as headroom:
+a 10-minute video may take 36 minutes at 1080p and 2.5 hours at 4K. A timeout
+fails the video ("The video took too long to process.") instead of retrying,
+because the same file on the same worker would only time out again.
+
 ## Horizontal worker scaling
 
 `docker compose up -d --scale worker=3`. Each worker runs one task at a time
 (`--workers 1`, prefetch 1), so RabbitMQ hands three uploads to three
 different workers and they transcode in parallel. In production each worker is
-capped at 1.5 CPUs and 1 GB. At Videio's size one worker is enough; a real
+capped at 1.5 CPUs and 3 GB. At Videio's size one worker is enough; a real
 system would scale workers on queue depth.
 
 ## Retries with backoff, and the dead-letter queue
 
 **What.** The task tells apart two kinds of failure. A *permanent* one (no video
-stream, ffprobe cannot read the file, longer than 10 minutes) marks the video
-`failed` with a short reason and is not retried. A *temporary* one (storage or
-database unavailable, ffmpeg killed by a signal, a timeout) is retried by
+stream, ffprobe cannot read the file, longer than 10 minutes, the encode ran
+past its time limit) marks the video `failed` with a short reason and is not
+retried. A *temporary* one (storage or database unavailable, ffmpeg killed by a
+signal such as the out-of-memory killer) is retried by
 taskiq's `SmartRetryMiddleware` after about 10 s, 60 s and then 5 min (plus up
 to 10% jitter), using RabbitMQ's delay queue (`videio.tasks.delay`, a
 per-message TTL that dead-letters back into `videio.tasks`). When the last of
@@ -254,11 +298,16 @@ A message can be delivered more than once (a worker dies after finishing but
 before acknowledging, the reaper re-kicks, or `/complete` is retried). The task
 is safe to run twice:
 
-- it returns at once for videos that are already `ready`, removed or not yet
-  uploaded;
-- it holds a Redis lock `transcode:lock:{id}` (40 minutes, longer than the
-  worst-case job) for the whole job, so a second copy arriving meanwhile does
-  nothing;
+- it only works on videos that are `uploaded`, or `processing` because a
+  worker died mid-job. Ready, failed, removed or not-yet-uploaded videos are
+  left alone;
+- it holds a Redis lock `transcode:lock:{id}` for the whole job. The lock
+  lives 3 minutes and the worker extends it every minute, so a live job keeps
+  it however long it runs, while a dead worker's lock lapses within 3 minutes.
+  A copy of the job that finds the lock taken does not drop the work: it puts
+  itself back on the queue for a minute later. If the holder finished, that
+  re-check sees the video is done and stops; if the holder died, it takes over
+  as soon as the lock lapses. Re-checks do not use up the retry budget;
 - outputs go to deterministic keys, so a re-run overwrites instead of
   duplicating. The master playlist is uploaded last, so it never points at a
   rendition that is missing.
@@ -268,8 +317,12 @@ is safe to run twice:
 On SIGTERM `taskiq worker` stops taking new messages and waits up to 300 s for
 the running task (`--wait-tasks-timeout 300`); compose gives the container
 310 s (`stop_grace_period`) before killing it. A redeploy during a transcode
-therefore finishes the job. If the worker is killed anyway, the message was
-never acknowledged and RabbitMQ redelivers it.
+therefore finishes a short job. A long one (a 4K video can take over an hour)
+is killed after the 300 s; the message was never acknowledged, so RabbitMQ
+redelivers it, and it is picked up again within about 3 minutes, once the dead
+worker's lock lapses. It then starts over from the beginning: ffmpeg cannot
+resume a half-written ladder. Waiting longer on shutdown would hold every
+redeploy up for as long as the longest transcode.
 
 ## Scheduled tasks
 

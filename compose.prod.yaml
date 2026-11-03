@@ -61,10 +61,13 @@ services:
       <<: *api-env
     deploy:
       replicas: 1
+      # One ffmpeg encodes every rung at once (eight for a 4K source). A 4K
+      # test clip peaked at 1.5 GB; the rest is headroom for real footage.
+      # An OOM kill is retried, then the video is marked failed.
       resources:
         limits:
           cpus: "1.5"
-          memory: 1g
+          memory: 3g
     depends_on:
       migrate:
         condition: service_completed_successfully

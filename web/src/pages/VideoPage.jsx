@@ -3,6 +3,12 @@ import { Link, useParams } from 'react-router';
 import Hls from 'hls.js';
 import { useCountVideoView, useVideo } from '../api/videos.js';
 
+// Rungs are named by their short side, so a portrait 1080x1920 video is 1080p.
+function qualityLabel(level) {
+  const side = Math.min(level.width || level.height, level.height || level.width);
+  return side ? `${side}p` : `${Math.round(level.bitrate / 1000)} kbps`;
+}
+
 function HlsPlayer({ source }) {
   const videoRef = useRef(null);
   const [levels, setLevels] = useState([]);
@@ -42,11 +48,14 @@ function HlsPlayer({ source }) {
             }}
           >
             <option value="-1">Auto</option>
-            {levels.map((level, index) => (
-              <option value={index} key={`${level.height}-${level.bitrate}`}>
-                {level.height}p
-              </option>
-            ))}
+            {levels
+              .map((level, index) => ({ index, level }))
+              .reverse()
+              .map(({ index, level }) => (
+                <option value={index} key={`${level.width}x${level.height}-${level.bitrate}`}>
+                  {qualityLabel(level)}
+                </option>
+              ))}
           </select>
         </label>
       ) : null}
@@ -93,7 +102,7 @@ export default function VideoPage() {
       ) : (
         <div className="empty-state">
           <strong>Processing</strong>
-          <span>720p will be ready in a minute or two.</span>
+          <span>Every quality up to the original will be ready in a minute or two.</span>
         </div>
       )}
       <div className="video-meta video-page-meta">
