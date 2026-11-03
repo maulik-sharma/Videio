@@ -27,6 +27,9 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://redis:6379/0"
 
+    # RabbitMQ task broker. The API publishes jobs and workers/scheduler consume them.
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
+
     # S3-compatible object storage. The API uses the internal endpoint for
     # server-side operations and the public endpoint when signing browser URLs.
     s3_internal_endpoint_url: str = "http://localhost:8333"

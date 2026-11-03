@@ -7,6 +7,7 @@ presigned URL must use the exact public host that was signed.
 
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import aioboto3  # type: ignore[import-untyped]
@@ -142,6 +143,37 @@ class S3Storage:
         except (BotoCoreError, ClientError, OSError, TimeoutError):
             # The cleanup scheduler in Phase 3 will retry abandoned uploads.
             return
+
+    async def download_original(self, key: str, destination: Path) -> None:
+        """Stream an uploaded original to a local worker file."""
+        try:
+            async with self._client() as client:
+                response = await client.get_object(Bucket=self.upload_bucket, Key=key)
+                body = response["Body"]
+                try:
+                    with destination.open("wb") as output:
+                        while chunk := await body.read(1024 * 1024):
+                            output.write(chunk)
+                finally:
+                    body.close()
+        except (BotoCoreError, ClientError, OSError, TimeoutError) as exc:
+            raise StorageError("Object storage could not download the original.") from exc
+
+    async def upload_media_file(self, source: Path, key: str, content_type: str) -> None:
+        """Upload a generated media file to the immutable media bucket."""
+        try:
+            async with self._client() as client:
+                await client.upload_file(
+                    str(source),
+                    self.media_bucket,
+                    key,
+                    ExtraArgs={
+                        "ContentType": content_type,
+                        "CacheControl": "public, max-age=604800",
+                    },
+                )
+        except (BotoCoreError, ClientError, OSError, TimeoutError) as exc:
+            raise StorageError("Object storage could not upload generated media.") from exc
 
     async def ensure_buckets(self) -> None:
         """Create the application buckets and apply browser CORS idempotently."""

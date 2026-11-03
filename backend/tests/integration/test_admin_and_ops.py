@@ -58,4 +58,9 @@ async def test_disabled_accounts_cannot_log_in_or_use_a_session(
 async def test_readyz_checks_every_dependency(client: AsyncClient) -> None:
     response = await client.get("/readyz")
     assert response.status_code == 200
-    assert response.json()["checks"] == {"db_primary": "ok", "db_replica": "ok", "redis": "ok"}
+    assert response.json()["checks"] == {
+        "db_primary": "ok",
+        "db_replica": "ok",
+        "redis": "ok",
+        "rabbitmq": "ok",
+    }

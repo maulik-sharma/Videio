@@ -2,17 +2,20 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import desc, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import (
+    AccessUserId,
+    BrokerDep,
     CurrentUser,
     ReadSession,
     RedisDep,
     SettingsDep,
     StorageDep,
     WriteSession,
+    client_ip,
 )
 from app.api.schemas import (
     CompleteVideoIn,
@@ -29,6 +32,8 @@ from app.db.models import Video
 from app.services import rate_limit
 from app.services.read_your_writes import mark_user_wrote
 from app.services.storage import StorageError, StorageVerificationError
+from app.worker.broker import VideioBroker
+from app.worker.tasks.transcode import transcode_video
 
 router = APIRouter(prefix="/api", tags=["videos"])
 
@@ -51,8 +56,14 @@ def _summary(video: Video) -> VideoSummaryOut:
         size_bytes=video.original_size_bytes,
         content_type=video.original_content_type,
         duration_s=video.duration_s,
+        renditions=video.renditions,
         thumbnail_key=video.thumbnail_key,
+        playback_url=(f"/media/{video.public_id}/master.m3u8" if video.status == "ready" else None),
+        thumbnail_url=(
+            f"/media/{video.public_id}/thumbnail.jpg" if video.thumbnail_key is not None else None
+        ),
         view_count=video.view_count,
+        failure_reason=video.failure_reason,
         created_at=video.created_at,
         updated_at=video.updated_at,
     )
@@ -64,6 +75,20 @@ def _storage_unavailable() -> AppError:
         "STORAGE_UNAVAILABLE",
         "Object storage is temporarily unavailable. Try again shortly.",
     )
+
+
+async def _enqueue_transcode(broker: VideioBroker, video_id: int) -> None:
+    """Publish the transcode job. On failure the row stays `uploaded`, so the
+    browser's retry of /complete publishes it again (the task is idempotent)."""
+    unavailable = AppError(
+        503, "QUEUE_UNAVAILABLE", "Video processing is temporarily unavailable. Try again."
+    )
+    if broker.write_channel is None or broker.write_channel.is_closed:
+        raise unavailable
+    try:
+        await transcode_video.kiq(video_id)
+    except Exception as exc:
+        raise unavailable from exc
 
 
 @router.post("/videos", response_model=VideoUploadOut, status_code=status.HTTP_201_CREATED)
@@ -152,6 +177,7 @@ async def complete_video_upload(
     redis: RedisDep,
     settings: SettingsDep,
     storage: StorageDep,
+    broker: BrokerDep,
 ) -> VideoSummaryOut:
     """Complete the S3 multipart upload and make the video available to workers."""
     if not body.has_unique_part_numbers():
@@ -165,6 +191,7 @@ async def complete_video_upload(
 
     # Retrying the browser's final request is safe after the database update.
     if video.status == "uploaded":
+        await _enqueue_transcode(broker, video.id)
         return _summary(video)
     if video.status != "pending_upload" or not video.multipart_upload_id:
         raise AppError(409, "UPLOAD_NOT_ACTIVE", "This upload is no longer active.")
@@ -215,6 +242,7 @@ async def complete_video_upload(
     # letting response serialization trigger an implicit MissingGreenlet load.
     await session.refresh(video)
     await mark_user_wrote(redis, user.id, settings.rw_flag_ttl_s)
+    await _enqueue_transcode(broker, video.id)
     return _summary(video)
 
 
@@ -246,3 +274,77 @@ async def my_videos(
         last = videos[-1]
         next_cursor = encode_cursor(last.created_at, last.id)
     return VideoPageOut(items=[_summary(video) for video in videos], next_cursor=next_cursor)
+
+
+@router.get("/feed", response_model=VideoPageOut)
+async def public_feed(
+    session: ReadSession,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> VideoPageOut:
+    """Return public ready videos from the replica using a keyset cursor."""
+    decoded = None
+    if cursor:
+        try:
+            decoded = decode_cursor(cursor)
+        except InvalidCursor as exc:
+            raise AppError(400, "INVALID_CURSOR", "That pagination cursor is invalid.") from exc
+
+    statement = select(Video).where(
+        Video.visibility == "public",
+        Video.status == "ready",
+        Video.removed_at.is_(None),
+    )
+    if decoded is not None:
+        statement = statement.where(
+            tuple_(Video.created_at, Video.id) < tuple_(decoded.created_at, decoded.video_id)
+        )
+    statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(limit + 1)
+    videos = list((await session.scalars(statement)).all())
+    next_cursor = None
+    if len(videos) > limit:
+        videos.pop()
+        last = videos[-1]
+        next_cursor = encode_cursor(last.created_at, last.id)
+    return VideoPageOut(items=[_summary(video) for video in videos], next_cursor=next_cursor)
+
+
+@router.get("/videos/{video_ref}", response_model=VideoSummaryOut)
+async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId) -> VideoSummaryOut:
+    """Return metadata for a public/unlisted video or its owner's private video."""
+    video = await session.scalar(select(Video).where(_video_ref_filter(video_ref)))
+    if (
+        video is None
+        or video.removed_at is not None
+        or (video.visibility == "private" and video.owner_id != user_id)
+    ):
+        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
+    if video.status != "ready" and video.owner_id != user_id:
+        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
+    return _summary(video)
+
+
+@router.post("/videos/{video_ref}/view")
+async def count_video_view(
+    video_ref: str,
+    session: ReadSession,
+    redis: RedisDep,
+    user_id: AccessUserId,
+    ip: str = Depends(client_ip),
+) -> dict[str, bool]:
+    """Count at most one view per user or IP for a video during one hour."""
+    video = await session.scalar(select(Video).where(_video_ref_filter(video_ref)))
+    if (
+        video is None
+        or video.removed_at is not None
+        or video.status != "ready"
+        or (video.visibility == "private" and video.owner_id != user_id)
+    ):
+        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
+    viewer = str(user_id) if user_id is not None else ip
+    marker = f"viewed:{video.id}:{viewer}"
+    if not await redis.set(marker, "1", nx=True, ex=60 * 60):
+        return {"counted": False}
+    await redis.incr(f"views:{video.id}")
+    await redis.sadd("views:dirty", video.id)
+    return {"counted": True}

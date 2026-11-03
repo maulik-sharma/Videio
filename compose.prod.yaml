@@ -12,6 +12,7 @@ x-api-env: &api-env
   VIDEIO_DB_USER: ${POSTGRES_USER:-videio}
   VIDEIO_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
   VIDEIO_REDIS_URL: redis://redis:6379/0
+  VIDEIO_RABBITMQ_URL: amqp://${RABBITMQ_USER:-videio}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672/
   VIDEIO_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
   VIDEIO_S3_INTERNAL_ENDPOINT_URL: http://seaweedfs:8333
   # Browsers upload through the edge (/uploads/), so URLs are signed for the app origin.
@@ -47,6 +48,60 @@ services:
       core-replica:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks: [internal]
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/maulik-sharma/videio-worker:${IMAGE_TAG:-latest}
+    init: true
+    environment:
+      <<: *api-env
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1g
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
+      core-replica:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    stop_grace_period: 310s
+    networks: [internal]
+    restart: unless-stopped
+
+  scheduler:
+    image: ghcr.io/maulik-sharma/videio-api:${IMAGE_TAG:-latest}
+    init: true
+    command: ["taskiq", "scheduler", "app.worker.scheduler:scheduler", "--skip-first-run"]
+    # The api image's healthcheck polls :8000/healthz, which the scheduler does
+    # not serve; it would always be unhealthy and fail `up --wait`.
+    healthcheck:
+      disable: true
+    environment:
+      <<: *api-env
+    deploy:
+      replicas: 1
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
+      core-replica:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks: [internal]
     restart: unless-stopped
@@ -244,6 +299,10 @@ configs:
               {"accessKey": "${S3_ACCESS_KEY:?set S3_ACCESS_KEY}", "secretKey": "${S3_SECRET_KEY:?set S3_SECRET_KEY}"}
             ],
             "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+          },
+          {
+            "name": "anonymous",
+            "actions": ["Read:media"]
           }
         ]
       }
