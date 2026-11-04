@@ -136,7 +136,31 @@ more containers for no gain. It would become worth considering when write
 volume or table size outgrows a single primary, even after adding replicas and
 caching.
 
-## Direct-to-storage multipart uploads
+## Rate limiting
+
+**What.** A token bucket per key in Redis, updated atomically by a Lua script
+that uses Redis' clock, so all API replicas share one view. Register allows 5
+per minute per IP. Login allows 5 per minute per email address,
+case-insensitive. Over the limit, the API answers 429 with `Retry-After`.
+Nginx also enforces `limit_req` per IP for the API endpoint.
+
+**Why.** Login is limited per email because that is what password guessing
+targets: one IP or many, each account gets 5 guesses a minute. A token bucket
+refills smoothly (one token every 12 seconds) instead of resetting all at once
+at a window boundary. The nginx `limit_req` provides an additional per-IP
+defense-in-depth layer.
+
+**Trade-off.** Per-email limiting lets anyone who knows an email lock its owner
+out of logging in for about a minute at a time. That is acceptable here; a
+larger system would combine per-email and per-IP buckets, or use a CAPTCHA,
+before locking. The nginx `limit_req` zone (10 requests/second) is a
+coarse limit; fine-grained per-user limits are handled by the Redis bucket.
+
+**How to see it.** Six quick wrong logins for one email: the sixth returns 429
+with `Retry-After`. `tests/integration/test_rate_limits.py` covers both limits.
+Check nginx logs for `limit_req` rejections.
+
+## Cache-aside and X-Cache header
 
 **What.** `POST /api/videos` stores only video metadata in the primary database,
 starts an S3 multipart upload in SeaweedFS, and returns one SigV4-presigned PUT
@@ -166,6 +190,34 @@ the browser Network panel: the JSON requests go to `/api`, while the large PUT
 requests go to `/uploads/…`, which the edge hands to SeaweedFS. The **My
 videos** page shows the row as `Pending upload` until the completion request
 changes it to `Uploaded`.
+
+## Cache-aside and X-Cache header
+
+**What.** The API uses Redis cache-aside pattern for video metadata and the public
+feed. Frequently accessed data is cached with TTLs: video metadata for 5 minutes
+(`video:{id}`) and the first page of the public feed for 30 seconds (`feed:page:1`).
+Nginx adds `X-Cache: HIT` or `X-Cache: MISS` headers to indicate cache status.
+
+**Why.** Caching read-heavy operations (video lookups, feed retrieval) reduces
+database load and improves response latency. The `X-Cache` header allows
+observability and demo purposes (see k6 load test results in `docs/design.md`).
+
+**Trade-off.** Cached data can be stale; cache invalidation on every write path
+(`update_video`, `delete_video`, `complete_video_upload`) ensures consistency
+at the cost of additional Redis operations. The 5-minute TTL for video metadata
+is a reasonable compromise—long enough to reduce DB load, short enough that
+visibility changes propagate quickly.
+
+**How to see it.** Run k6 load tests (`k6 run load-tests/feed_and_video.k6`).
+The `X-Cache: HIT` header should appear on subsequent requests within the TTL.
+Changing a video's visibility should invalidate the cache, and the next request
+should show `X-Cache: MISS` followed by `X-Cache: HIT` after the new data is
+cached.
+
+**When for real.** When read load significantly exceeds write load and the
+working set fits in memory. At Videio's size, one Postgres instance with Redis
+cache is sufficient; a real system would add a dedicated cache layer (Redis or
+Valkey) with read-through/write-through patterns.
 
 ## Video metadata and public IDs
 

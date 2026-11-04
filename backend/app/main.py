@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.core.errors import install_error_handlers
 from app.core.middleware import CsrfHeaderMiddleware, RequestIdMiddleware
 from app.db.engines import Database
+from app.services.cache import set_cache_service
 from app.services.storage import S3Storage
 from app.worker.broker import broker
 
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
     app.state.storage = S3Storage.from_settings(settings)
     app.state.broker = broker
+    set_cache_service(app.state.redis)
     try:
         await broker.startup()
         yield

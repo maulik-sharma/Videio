@@ -1,0 +1,88 @@
+import http from "k6/http";
+import { check, sleep } from "k6";
+import { Rate } from "k6/metrics";
+
+export const errorRate = new Rate("errors");
+
+// Feed test
+export let options = {
+    stages: [
+        { duration: "2m", target: 10 },
+        { duration: "5m", target: 10 },
+        { duration: "2m", target: 0 },
+    ],
+    thresholds: {
+        "errors": ["rate<0.01"],
+        "http_req_duration": ["p(95)<2000"],
+    },
+};
+
+export function testFeed() {
+    var res = http.get("http://localhost:8080/api/feed");
+    errorRate.add(check(res, {
+        "feed status is 200": (r) => r.status === 200,
+        "feed has items": (r) => r.json("items").length > 0,
+        "x-cache header present": (r) => r.headers["x-cache"] !== undefined,
+    }));
+    sleep(1);
+}
+
+// Video page test
+export let videoOptions = {
+    stages: [
+        { duration: "2m", target: 5 },
+        { duration: "5m", target: 5 },
+        { duration: "2m", target: 0 },
+    ],
+    thresholds: {
+        "errors": ["rate<0.01"],
+        "http_req_duration": ["p(95)<1500"],
+    },
+};
+
+export function testVideoPage() {
+    var res = http.get("http://localhost:8080/api/videos/1");
+    errorRate.add(check(res, {
+        "video status is 200": (r) => r.status === 200,
+        "video has metadata": (r) => r.json("public_id") !== undefined,
+        "x-cache header present": (r) => r.headers["x-cache"] !== undefined,
+    }));
+    sleep(1);
+}
+
+// Upload test (with small file simulation)
+export let uploadOptions = {
+    stages: [
+        { duration: "2m", target: 2 },
+        { duration: "5m", target: 2 },
+        { duration: "2m", target: 0 },
+    ],
+    thresholds: {
+        "errors": ["rate<0.01"],
+        "http_req_duration": ["p(95)<3000"],
+    },
+};
+
+export function testUpload() {
+    var res = http.post(
+        "http://localhost:8080/api/videos",
+        JSON.stringify({
+            title: "Test video for load testing",
+            description: "Load test description",
+            visibility: "public",
+            size_bytes: 1024 * 1024, // 1 MB
+            content_type: "video/mp4",
+        }),
+        {
+            headers: {
+                "Content-Type": "application/json",
+                "X-Requested-With": "videio",
+            },
+        }
+    );
+    errorRate.add(check(res, {
+        "upload status is 201": (r) => r.status === 201,
+        "public_id returned": (r) => r.json("public_id") !== undefined,
+    }));
+    sleep(1);
+}
