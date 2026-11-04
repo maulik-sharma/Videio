@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 import uuid
 
-from app.api.deps import CurrentAdmin, DbDep
+from app.api.deps import CurrentAdmin, DbDep, WriteSession
 from app.services.audit import log_action
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])

@@ -2,6 +2,8 @@
 
 import uuid
 
+from app.core.policy import can
+
 
 def _u():
     return uuid.uuid4()
@@ -56,9 +58,6 @@ def _user_admin(id_=None):
 
 def _user_user(id_=None):
     return _user("user", id=id_)
-
-
-from app.core.policy import can
 
 
 def test_admin_can_disable_user():

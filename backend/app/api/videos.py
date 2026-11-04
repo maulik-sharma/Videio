@@ -1,7 +1,5 @@
 """Video metadata and direct-to-object-storage upload endpoints."""
 
-from datetime import datetime, timezone
-
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
