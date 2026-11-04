@@ -10,7 +10,6 @@ from app.api.deps import (
     AccessUserId,
     BrokerDep,
     CurrentUser,
-    CurrentAdmin,
     ReadSession,
     RedisDep,
     SettingsDep,
@@ -28,17 +27,14 @@ from app.api.schemas import (
 )
 from app.core.cursors import InvalidCursor, decode_cursor, encode_cursor
 from app.core.errors import AppError
-from app.core.policy import can
-from app.core.security import decode_access_token
+from app.core.ids import new_public_id
 from app.db.models import User, Video
 from app.services import rate_limit
-from app.services.audit import log_action
-from app.services.cache import cache_service, set_cache_service
+from app.services.cache import CacheService, cache_service
 from app.services.read_your_writes import mark_user_wrote
 from app.services.storage import StorageError, StorageVerificationError
 from app.worker.broker import VideioBroker
 from app.worker.tasks.transcode import transcode_video
-
 
 router = APIRouter(prefix="/api", tags=["videos"])
 
@@ -81,6 +77,16 @@ def _storage_unavailable() -> AppError:
         "STORAGE_UNAVAILABLE",
         "Object storage is temporarily unavailable. Try again shortly.",
     )
+
+
+def _cache() -> CacheService:
+    if cache_service is None:
+        raise AppError(
+            503,
+            "CACHE_UNAVAILABLE",
+            "Cache service is temporarily unavailable. Try again shortly.",
+        )
+    return cache_service
 
 
 async def _enqueue_transcode(broker: VideioBroker, video_id: int) -> None:
@@ -294,7 +300,7 @@ async def public_feed(
 ) -> VideoPageOut:
     """Return public ready videos from the replica using a keyset cursor."""
     # Try cache first
-    cached_items, cached_cursor = await cache_service.get_cached_feed_page(1)
+    cached_items, cached_cursor = await _cache().get_cached_feed_page(1)
     if cached_items is not None and cursor is None:
         return VideoPageOut(
             items=cached_items[:limit],
@@ -330,11 +336,11 @@ async def public_feed(
         next_cursor = encode_cursor(last.created_at, last.id)
 
     items = [_summary(video, owner_name) for video, owner_name in rows]
-    
+
     # Cache the first page
     if len(items) > 0 and cursor is None:
-        await cache_service.cache_feed_page(1, items, next_cursor)
-    
+        await _cache().cache_feed_page(1, items, next_cursor)
+
     return VideoPageOut(
         items=items,
         next_cursor=next_cursor,
@@ -345,13 +351,13 @@ async def public_feed(
 async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId) -> VideoSummaryOut:
     """Return metadata for a public/unlisted video or its owner's private video."""
     # Try cache first
-    if user_id is not None:
-        cached = await cache_service.get_cached_video_meta(int(video_ref) if video_ref.isdecimal() else None)
+    if user_id is not None and video_ref.isdecimal():
+        cached = await _cache().get_cached_video_meta(int(video_ref))
         if cached is not None:
             # Reconstruct Video object from cache or use cached data
             # For now, fall through to DB
             pass
-    
+
     row = (
         await session.execute(
             select(Video, User.display_name)
@@ -368,7 +374,7 @@ async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId)
         raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
     if video.status != "ready" and video.owner_id != user_id:
         raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
-    
+
     # Cache the metadata
     summary_data = {
         "id": video.id,
@@ -383,7 +389,9 @@ async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId)
         "duration_s": video.duration_s,
         "renditions": video.renditions,
         "thumbnail_key": video.thumbnail_key,
-        "playback_url": (f"/media/{video.public_id}/master.m3u8" if video.status == "ready" else None),
+        "playback_url": (
+            f"/media/{video.public_id}/master.m3u8" if video.status == "ready" else None
+        ),
         "thumbnail_url": (
             f"/media/{video.public_id}/thumbnail.jpg" if video.thumbnail_key is not None else None
         ),
@@ -392,8 +400,8 @@ async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId)
         "created_at": video.created_at,
         "updated_at": video.updated_at,
     }
-    await cache_service.cache_video_meta(video.id, summary_data)
-    
+    await _cache().cache_video_meta(video.id, summary_data)
+
     return _summary(video, owner_name)
 
 
@@ -436,11 +444,8 @@ async def internal_authz(
     Called by nginx internal subrequest. The user's access cookie is attached
     by the browser (SameSite=Lax) and decoded by the existing CurrentUser dep.
     """
-    from app.db.models import User as _User
 
-    video = await session.scalar(
-        select(Video).where(_video_ref_filter(video_ref))
-    )
+    video = await session.scalar(select(Video).where(_video_ref_filter(video_ref)))
     if video is None:
         return 404, "VIDEO_NOT_FOUND"
 
@@ -463,7 +468,11 @@ async def internal_authz(
     # Logged-in but not owner
     if video.visibility == "private" and video.removed_at is None:
         return 403, "FORBIDDEN"
-    if video.visibility in ("public", "unlisted") and video.removed_at is None and video.status == "ready":
+    if (
+        video.visibility in ("public", "unlisted")
+        and video.removed_at is None
+        and video.status == "ready"
+    ):
         return 204, ""
     return 403, "FORBIDDEN"
 
@@ -488,16 +497,19 @@ async def update_video(
         video.description = body["description"]
     if "visibility" in body:
         if body["visibility"] not in ("public", "unlisted", "private"):
-            raise AppError(400, "INVALID_VISIBILITY", "Visibility must be public, unlisted, or private.")
+            raise AppError(
+                400,
+                "INVALID_VISIBILITY",
+                "Visibility must be public, unlisted, or private.",
+            )
         video.visibility = body["visibility"]
 
     await session.commit()
     await session.refresh(video)
     # Invalidate cache on write
-    if user_id is not None:
-        await cache_service.invalidate_video_meta(video.id)
-        # Invalidate feed cache for first page
-        await cache_service.invalidate_feed_page(1)
+    await _cache().invalidate_video_meta(video.id)
+    # Invalidate feed cache for first page
+    await _cache().invalidate_feed_page(1)
     return _summary(video, user.display_name)
 
 
@@ -520,7 +532,12 @@ async def delete_video(
         await storage.delete_object(video.original_key)
     if video.thumbnail_key:
         await storage.delete_object(video.thumbnail_key)
-    for rendition in video.renditions or {}:
+    renditions: list[dict[str, Any]] = (
+        [rendition for rendition in video.renditions if isinstance(rendition, dict)]
+        if isinstance(video.renditions, list)
+        else []
+    )
+    for rendition in renditions:
         key = rendition.get("key") or f"videos/{video.public_id}/{rendition.get('name')}"
         await storage.delete_object(key)
 
@@ -528,7 +545,7 @@ async def delete_video(
     video.removed_by = user.id
     video.removal_reason = "deleted by owner"
     # Invalidate cache on write
-    await cache_service.invalidate_video_meta(video.id)
-    await cache_service.invalidate_feed_page(1)
+    await _cache().invalidate_video_meta(video.id)
+    await _cache().invalidate_feed_page(1)
     await session.commit()
     await session.refresh(video)

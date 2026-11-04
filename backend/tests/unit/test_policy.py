@@ -11,21 +11,29 @@ def _u():
 
 def _user(role="user", id_=None, **extra):
     email = f"test@{role}.com"
-    return type("User", (), {"role": role, "id": id_ or _u(), "email": email, "display_name": role, **extra})()
+    return type(
+        "User",
+        (),
+        {"role": role, "id": id_ or _u(), "email": email, "display_name": role, **extra},
+    )()
 
 
 def _video(**kwargs):
     id_ = kwargs.pop("id", 1)
     owner_id = kwargs.pop("owner_id", None)
-    return_type = type("Video", (), {
-        "id": id_,
-        "public_id": "3kTq9bZx1",
-        "owner_id": owner_id or _u(),
-        "title": "Test",
-        "visibility": kwargs.get("visibility", "public"),
-        "status": kwargs.get("status", "ready"),
-        "removed_at": kwargs.get("removed_at"),
-    })
+    return_type = type(
+        "Video",
+        (),
+        {
+            "id": id_,
+            "public_id": "3kTq9bZx1",
+            "owner_id": owner_id or _u(),
+            "title": "Test",
+            "visibility": kwargs.get("visibility", "public"),
+            "status": kwargs.get("status", "ready"),
+            "removed_at": kwargs.get("removed_at"),
+        },
+    )
     # If owner_id not provided, set it to the same ID as the video for owner tests
     if owner_id is None and "owner_id" not in str(return_type):
         # We'll handle this in test setup instead

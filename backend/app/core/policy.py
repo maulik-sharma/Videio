@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
-
-from app.db.models import Video, User
+from app.db.models import User, Video
 
 
 def can(actor: User | None, action: str, video: Video | None = None) -> bool:
@@ -14,9 +12,7 @@ def can(actor: User | None, action: str, video: Video | None = None) -> bool:
     """
     if actor is None:
         # Anonymous viewer
-        if action in ("view_public", "view_unlisted"):
-            return True
-        return False
+        return action in ("view_public", "view_unlisted")
     if actor.role == "admin":
         if action == "disable_user":
             return True
@@ -26,9 +22,7 @@ def can(actor: User | None, action: str, video: Video | None = None) -> bool:
             return True
     if actor.role == "user":
         if video is None:
-            if action in ("view_public", "view_unlisted"):
-                return True
-            return False
+            return action in ("view_public", "view_unlisted")
         if action == "view_private":
             return video.owner_id == actor.id
         if action == "view_public":

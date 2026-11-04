@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AuditLog, User, Video
+from app.db.models import AuditLog
 
 
 async def log_action(
     *,
-    session,
+    session: AsyncSession,
     actor_id: uuid.UUID | None,
     action: str,
     target_type: str,
@@ -19,8 +19,6 @@ async def log_action(
     reason: str | None = None,
 ) -> AuditLog:
     """Write a row to the `audit_log` table and return the inserted row."""
-    from app.db.models import AuditLog
-
     entry = AuditLog(
         actor_id=actor_id,
         action=action,
