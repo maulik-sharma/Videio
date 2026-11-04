@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
-
-from app.db.models import AuditLog, User, Video
+from app.db.models import AuditLog
 
 
 async def log_action(

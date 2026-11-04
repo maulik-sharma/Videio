@@ -6,7 +6,6 @@ import json
 
 from redis.asyncio import Redis
 
-
 CACHE_TTL_VIDEO_META = 300  # 5 minutes
 CACHE_TTL_FEED_PAGE = 30  # 30 seconds
 CACHE_TTL_THUMBNAIL = 86400  # 1 day
