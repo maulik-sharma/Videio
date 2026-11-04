@@ -96,6 +96,7 @@ class CompleteVideoIn(BaseModel):
 class VideoSummaryOut(BaseModel):
     id: int
     public_id: str
+    owner_id: uuid.UUID
     owner_name: str
     title: str
     description: str
@@ -148,7 +149,6 @@ class ReasonIn(BaseModel):
 
 
 class AdminVideoOut(VideoSummaryOut):
-    owner_id: uuid.UUID
     owner_email: str
     owner_disabled: bool
 

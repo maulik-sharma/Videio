@@ -5,13 +5,15 @@
 //   between concurrent requests so the refresh token is only rotated once.
 
 export class ApiError extends Error {
-  constructor({ status, code, message, fields = {}, retryAfter = null }) {
+  constructor({ status, code, message, fields = {}, retryAfter = null, reason = null }) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.fields = fields;
     this.retryAfter = retryAfter;
+    // Why an admin removed a video (VIDEO_REMOVED), shown to its owner.
+    this.reason = reason;
   }
 }
 
@@ -25,6 +27,7 @@ export function toApiError(status, body, headers = new Headers()) {
     message: error?.message ?? defaultMessage(status),
     fields: error?.fields ?? {},
     retryAfter: Number.isFinite(retryHeader) ? retryHeader : (error?.retry_after ?? null),
+    reason: error?.reason ?? null,
   });
 }
 

@@ -47,6 +47,7 @@ def to_summary(record: VideoRecord, pending_views: int = 0) -> VideoSummaryOut:
     ready = record.status == "ready"
     return VideoSummaryOut(
         id=record.id,
+        owner_id=record.owner_id,
         owner_name=record.owner_name,
         public_id=record.public_id,
         title=record.title,
@@ -450,7 +451,12 @@ async def count_video_view(
     The count goes to Redis only; a scheduled task adds it to Postgres every minute.
     """
     record, _ = await cache.get_video_record(redis, session, video_ref)
-    if record is None or record.status != "ready" or not can(actor, "view", record):
+    if (
+        record is None
+        or record.status != "ready"
+        or record.removed_at is not None  # admins reviewing a takedown are not viewers
+        or not can(actor, "view", record)
+    ):
         raise _not_found()
     viewer = str(actor.id) if actor is not None else ip
     if not await redis.set(f"viewed:{record.id}:{viewer}", "1", nx=True, ex=60 * 60):

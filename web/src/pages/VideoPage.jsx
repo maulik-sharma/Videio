@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, useNavigate, useParams } from 'react-router';
 import Hls from 'hls.js';
+import { useMe } from '../auth/session.js';
 import { useCountVideoView, useFeed, useVideo } from '../api/videos.js';
 import Avatar from '../components/Avatar.jsx';
+import { OwnerActions } from '../components/OwnerDialogs.jsx';
 import VideoCard from '../components/VideoCard.jsx';
 import { formatDate, formatViews } from '../utils/format.js';
 
@@ -122,8 +124,38 @@ function MoreVideos({ currentId }) {
 
 const VISIBILITY = { unlisted: 'Unlisted', private: 'Private' };
 
+function Unavailable({ error }) {
+  if (error?.code === 'VIDEO_REMOVED') {
+    return (
+      <main className="page">
+        <div className="empty" role="alert">
+          <strong>An administrator removed this video</strong>
+          <span>Reason: {error.reason || 'none given'}</span>
+          <span>Only you can see this notice. Nobody else can watch the video.</span>
+          <Link className="button" to="/my-videos">
+            Go to My videos
+          </Link>
+        </div>
+      </main>
+    );
+  }
+  return (
+    <main className="page">
+      <div className="empty">
+        <strong>Video unavailable</strong>
+        <span>This video does not exist, or it is private.</span>
+        <Link className="button" to="/">
+          Browse latest videos
+        </Link>
+      </div>
+    </main>
+  );
+}
+
 export default function VideoPage() {
   const { publicId } = useParams();
+  const navigate = useNavigate();
+  const { data: me } = useMe();
   const video = useVideo(publicId);
   // The id of the last video counted. The router reuses this component when
   // moving between videos, so a plain boolean would skip every later video.
@@ -155,23 +187,19 @@ export default function VideoPage() {
       </main>
     );
   }
-  if (video.isError || !data) {
-    return (
-      <main className="page">
-        <div className="empty">
-          <strong>Video unavailable</strong>
-          <span>This video does not exist, or it is private.</span>
-          <Link className="button" to="/">
-            Browse latest videos
-          </Link>
-        </div>
-      </main>
-    );
-  }
+  if (video.isError || !data) return <Unavailable error={video.error} />;
+
+  const owned = Boolean(me && me.id === data.owner_id);
 
   return (
     <main className="page watch">
       <div className="watch-main">
+        {data.removed_at ? (
+          <div className="notice notice-warn" role="status">
+            <strong>Taken down. Only admins can see this page.</strong>
+            <span>Reason: {data.removal_reason}</span>
+          </div>
+        ) : null}
         {data.status === 'ready' && data.playback_url ? (
           <HlsPlayer source={data.playback_url} />
         ) : (
@@ -191,6 +219,9 @@ export default function VideoPage() {
             <span>{formatDate(data.created_at)}</span>
           </div>
         </div>
+        {owned ? (
+          <OwnerActions video={data} onDeleted={() => navigate('/my-videos', { replace: true })} />
+        ) : null}
         {data.description ? <p className="watch-description">{data.description}</p> : null}
       </div>
       <MoreVideos currentId={data.public_id} />

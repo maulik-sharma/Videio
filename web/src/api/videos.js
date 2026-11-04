@@ -79,8 +79,35 @@ export function useVideo(publicId) {
     enabled: Boolean(publicId),
     retry: false,
     refetchInterval: (query) => {
+      if (query.state.status === 'error') return false;
       const status = query.state.data?.status;
       return status === 'ready' || status === 'failed' ? false : 3000;
+    },
+  });
+}
+
+export function useUpdateVideo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ publicId, changes }) =>
+      api(`/api/videos/${encodeURIComponent(publicId)}`, { method: 'PATCH', body: changes }),
+    onSuccess: (video) => {
+      queryClient.setQueryData(['video', video.public_id], video);
+      queryClient.invalidateQueries({ queryKey: MY_VIDEOS });
+      queryClient.invalidateQueries({ queryKey: FEED });
+    },
+  });
+}
+
+export function useDeleteVideo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (publicId) =>
+      api(`/api/videos/${encodeURIComponent(publicId)}`, { method: 'DELETE' }),
+    onSuccess: (_, publicId) => {
+      queryClient.removeQueries({ queryKey: ['video', publicId] });
+      queryClient.invalidateQueries({ queryKey: MY_VIDEOS });
+      queryClient.invalidateQueries({ queryKey: FEED });
     },
   });
 }

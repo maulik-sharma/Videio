@@ -64,6 +64,11 @@ export default function AccountMenu({ me }) {
           <Link to="/upload" className="menu-item" onClick={close}>
             Upload a video
           </Link>
+          {me.role === 'admin' ? (
+            <Link to="/admin" className="menu-item" onClick={close}>
+              Admin
+            </Link>
+          ) : null}
           <button
             type="button"
             className="menu-item"

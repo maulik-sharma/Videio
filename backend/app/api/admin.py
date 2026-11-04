@@ -153,7 +153,6 @@ async def system(
 def _admin_video(record: VideoRecord, owner: User) -> AdminVideoOut:
     return AdminVideoOut(
         **to_summary(record).model_dump(),
-        owner_id=owner.id,
         owner_email=owner.email,
         owner_disabled=owner.disabled_at is not None,
     )

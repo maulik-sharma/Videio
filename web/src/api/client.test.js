@@ -46,6 +46,14 @@ describe('toApiError', () => {
     expect(error.message).toMatch(/our side/);
   });
 
+  it('keeps the takedown reason for removed videos', () => {
+    const error = toApiError(410, {
+      error: { code: 'VIDEO_REMOVED', message: 'Removed.', reason: 'Copyright claim' },
+    });
+    expect(error.code).toBe('VIDEO_REMOVED');
+    expect(error.reason).toBe('Copyright claim');
+  });
+
   it('describes network failures', () => {
     expect(toApiError(0, null).message).toMatch(/reach the server/);
   });

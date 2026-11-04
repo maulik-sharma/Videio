@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Link, NavLink } from 'react-router';
-import { HomeIcon, LibraryIcon, MenuIcon, SignInIcon, UploadIcon } from './icons.jsx';
+import { HomeIcon, LibraryIcon, MenuIcon, ShieldIcon, SignInIcon, UploadIcon } from './icons.jsx';
 import Wordmark from './Wordmark.jsx';
 
 function SideLink({ to, icon, label, onNavigate, end = false }) {
@@ -28,6 +28,9 @@ function SideLinks({ me, onNavigate }) {
               onNavigate={onNavigate}
             />
             <SideLink to="/upload" icon={<UploadIcon />} label="Upload" onNavigate={onNavigate} />
+            {me.role === 'admin' ? (
+              <SideLink to="/admin" icon={<ShieldIcon />} label="Admin" onNavigate={onNavigate} />
+            ) : null}
           </>
         ) : (
           <SideLink to="/login" icon={<SignInIcon />} label="Log in" onNavigate={onNavigate} />

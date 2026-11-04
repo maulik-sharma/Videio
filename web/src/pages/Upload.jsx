@@ -3,6 +3,7 @@ import { Link, Navigate } from 'react-router';
 import { useMe } from '../auth/session.js';
 import { useCompleteVideoUpload, useCreateVideoUpload } from '../api/videos.js';
 import { partSizeFor, uploadParts } from '../api/uploads.js';
+import VisibilityChoice from '../components/VisibilityChoice.jsx';
 import { formatBytes } from '../utils/format.js';
 
 const MAX_SIZE = 500 * 1000 * 1000;
@@ -189,31 +190,12 @@ export default function Upload() {
             rows={4}
           />
         </div>
-        <fieldset className="field">
-          <legend>Visibility</legend>
-          <div className="choice-group">
-            {[
-              ['public', 'Public', 'Shown in the feed.'],
-              ['unlisted', 'Unlisted', 'Anyone with the link can watch.'],
-              ['private', 'Private', 'Only you can watch.'],
-            ].map(([value, label, hint]) => (
-              <label className="choice" key={value}>
-                <input
-                  type="radio"
-                  name="visibility"
-                  value={value}
-                  checked={form.visibility === value}
-                  onChange={update('visibility')}
-                  disabled={busy}
-                />
-                <span>
-                  <strong>{label}</strong>
-                  <span>{hint}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        <VisibilityChoice
+          name="visibility"
+          value={form.visibility}
+          onChange={(visibility) => setForm((current) => ({ ...current, visibility }))}
+          disabled={busy}
+        />
 
         {busy ? (
           <div className="progress" aria-live="polite">
