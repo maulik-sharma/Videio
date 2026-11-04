@@ -127,6 +127,32 @@ async def _dead_lettered_video_ids(rabbit: httpx.AsyncClient) -> set[int]:
     return ids
 
 
+async def _check_media_access_at_the_edge(owner: httpx.AsyncClient, video: dict[str, Any]) -> None:
+    """nginx asks the API before serving any media, and caches only non-private videos."""
+    thumbnail = video["thumbnail_url"]
+    async with httpx.AsyncClient(base_url=EDGE, timeout=30) as anonymous:
+        first = await anonymous.get(thumbnail)
+        second = await anonymous.get(thumbnail)
+        assert first.status_code == second.status_code == 200
+        assert second.headers["x-edge-cache"] == "HIT"
+        # Shared caches in front of the edge must not skip the access check.
+        assert second.headers["cache-control"].startswith("private")
+
+        made_private = await owner.patch(
+            f"/api/videos/{video['public_id']}", headers=HEADERS, json={"visibility": "private"}
+        )
+        assert made_private.status_code == 200, made_private.text
+        # Already in the edge cache, but the check runs first, so it is refused.
+        assert (await anonymous.get(thumbnail)).status_code == 403
+        owner_copy = await owner.get(thumbnail)
+        assert owner_copy.status_code == 200
+        assert owner_copy.headers["x-edge-cache"] == "BYPASS"
+
+        deleted = await owner.delete(f"/api/videos/{video['public_id']}", headers=HEADERS)
+        assert deleted.status_code == 204, deleted.text
+        assert (await owner.get(video["playback_url"])).status_code == 403
+
+
 async def test_upload_transcodes_and_corrupt_upload_reaches_dlq(tmp_path: Path) -> None:
     clip = await _make_test_clip(tmp_path / "smoke.mp4")
 
@@ -161,6 +187,8 @@ async def test_upload_transcodes_and_corrupt_upload_reaches_dlq(tmp_path: Path) 
         thumbnail = await client.get(ready["thumbnail_url"])
         assert thumbnail.status_code == 200
         assert thumbnail.headers["content-type"] == "image/jpeg"
+
+        await _check_media_access_at_the_edge(client, ready)
 
         failed_id = await _upload(client, b"not a video", "CI corrupt video")
         failed = await _wait_for_status(client, failed_id, "failed")

@@ -1,16 +1,15 @@
-"""Video metadata and direct-to-object-storage upload endpoints."""
+"""Video metadata, direct-to-object-storage uploads, owner edits and view counts."""
 
-from typing import Any
+import logging
 
-from fastapi import APIRouter, Depends, Query, Request, status
-from sqlalchemy import desc, func, or_, select, tuple_
+from fastapi import APIRouter, Depends, Query, Response, status
+from sqlalchemy import desc, select, tuple_
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import (
-    AccessUserId,
     BrokerDep,
     CurrentUser,
-    CurrentAdmin,
+    OptionalActor,
     ReadSession,
     RedisDep,
     SettingsDep,
@@ -23,56 +22,89 @@ from app.api.schemas import (
     VideoCreateIn,
     VideoPageOut,
     VideoSummaryOut,
+    VideoUpdateIn,
     VideoUploadOut,
     expected_part_count,
 )
-from app.core.cursors import InvalidCursor, decode_cursor, encode_cursor
+from app.core.cursors import InvalidCursor, VideoCursor, decode_cursor, encode_cursor
 from app.core.errors import AppError
-from app.core.policy import can
-from app.core.security import decode_access_token
+from app.core.ids import new_public_id
+from app.core.policy import can, is_owner
 from app.db.models import User, Video
-from app.services import rate_limit
-from app.services.audit import log_action
-from app.services.cache import cache_service, set_cache_service
+from app.services import cache, rate_limit
+from app.services.cache import VideoRecord, video_ref_filter
 from app.services.read_your_writes import mark_user_wrote
 from app.services.storage import StorageError, StorageVerificationError
 from app.worker.broker import VideioBroker
 from app.worker.tasks.transcode import transcode_video
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["videos"])
 
 
-def _video_ref_filter(video_ref: str) -> Any:
-    """Accept public ids in URLs while tolerating internal numeric ids for APIs."""
-    if video_ref.isdecimal():
-        return or_(Video.id == int(video_ref), Video.public_id == video_ref)
-    return Video.public_id == video_ref
-
-
-def _summary(video: Video, owner_name: str) -> VideoSummaryOut:
+def to_summary(record: VideoRecord, pending_views: int = 0) -> VideoSummaryOut:
+    ready = record.status == "ready"
     return VideoSummaryOut(
-        id=video.id,
-        owner_name=owner_name,
-        public_id=video.public_id,
-        title=video.title,
-        description=video.description,
-        visibility=video.visibility,
-        status=video.status,
-        size_bytes=video.original_size_bytes,
-        content_type=video.original_content_type,
-        duration_s=video.duration_s,
-        renditions=video.renditions,
-        thumbnail_key=video.thumbnail_key,
-        playback_url=(f"/media/{video.public_id}/master.m3u8" if video.status == "ready" else None),
+        id=record.id,
+        owner_name=record.owner_name,
+        public_id=record.public_id,
+        title=record.title,
+        description=record.description,
+        visibility=record.visibility,
+        status=record.status,
+        size_bytes=record.size_bytes,
+        content_type=record.content_type,
+        duration_s=record.duration_s,
+        renditions=record.renditions,
+        thumbnail_key=record.thumbnail_key,
+        playback_url=f"/media/{record.public_id}/master.m3u8" if ready else None,
         thumbnail_url=(
-            f"/media/{video.public_id}/thumbnail.jpg" if video.thumbnail_key is not None else None
+            f"/media/{record.public_id}/thumbnail.jpg" if record.thumbnail_key is not None else None
         ),
-        view_count=video.view_count,
-        failure_reason=video.failure_reason,
-        created_at=video.created_at,
-        updated_at=video.updated_at,
+        # Postgres has the flushed total; Redis holds views since the last flush.
+        view_count=record.view_count + pending_views,
+        failure_reason=record.failure_reason,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        removed_at=record.removed_at,
+        removal_reason=record.removal_reason,
     )
+
+
+async def summaries(redis: RedisDep, records: list[VideoRecord]) -> list[VideoSummaryOut]:
+    pending = await cache.pending_views(redis, [record.id for record in records])
+    return [to_summary(record, pending.get(record.id, 0)) for record in records]
+
+
+def _not_found() -> AppError:
+    return AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
+
+
+def _removed(record: VideoRecord | Video) -> AppError:
+    return AppError(
+        410,
+        "VIDEO_REMOVED",
+        "An administrator removed this video.",
+        extra={"reason": record.removal_reason},
+    )
+
+
+def parse_cursor(cursor: str | None) -> VideoCursor | None:
+    if not cursor:
+        return None
+    try:
+        return decode_cursor(cursor)
+    except InvalidCursor as exc:
+        raise AppError(400, "INVALID_CURSOR", "That pagination cursor is invalid.") from exc
+
+
+def _page(records: list[VideoRecord], limit: int) -> tuple[list[VideoRecord], str | None]:
+    """Split `limit + 1` rows into one page and the cursor for the next, if any."""
+    if len(records) <= limit:
+        return records, None
+    page = records[:limit]
+    return page, encode_cursor(page[-1].created_at, page[-1].id)
 
 
 def _storage_unavailable() -> AppError:
@@ -95,6 +127,20 @@ async def _enqueue_transcode(broker: VideioBroker, video_id: int) -> None:
         await transcode_video.kiq(video_id)
     except Exception as exc:
         raise unavailable from exc
+
+
+async def _owned_video_for_update(session: WriteSession, video_ref: str, user: User) -> Video:
+    """Lock the row for a change by its owner, answering as the policy says otherwise.
+
+    Someone who may not even see the video gets 404, so private videos do not
+    leak their existence; someone who may see it but not change it gets 403.
+    """
+    video = await session.scalar(select(Video).where(video_ref_filter(video_ref)).with_for_update())
+    if video is None:
+        raise _not_found()
+    if not can(user, "view", video) and not is_owner(user, video):
+        raise _not_found()
+    return video
 
 
 @router.post("/videos", response_model=VideoUploadOut, status_code=status.HTTP_201_CREATED)
@@ -190,15 +236,15 @@ async def complete_video_upload(
         raise AppError(400, "INVALID_UPLOAD_PARTS", "Each upload part number must be unique.")
 
     video = await session.scalar(
-        select(Video).where(_video_ref_filter(video_ref), Video.owner_id == user.id)
+        select(Video).where(video_ref_filter(video_ref), Video.owner_id == user.id)
     )
     if video is None:
-        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
+        raise _not_found()
 
     # Retrying the browser's final request is safe after the database update.
     if video.status == "uploaded":
         await _enqueue_transcode(broker, video.id)
-        return _summary(video, user.display_name)
+        return to_summary(VideoRecord.from_row(video, user.display_name))
     if video.status != "pending_upload" or not video.multipart_upload_id:
         raise AppError(409, "UPLOAD_NOT_ACTIVE", "This upload is no longer active.")
 
@@ -248,257 +294,111 @@ async def complete_video_upload(
     # letting response serialization trigger an implicit MissingGreenlet load.
     await session.refresh(video)
     await mark_user_wrote(redis, user.id, settings.rw_flag_ttl_s)
+    # Not in the feed yet, but the owner may have the pending row cached.
+    await cache.publish_video_change(redis, session, video.public_id, feed=False)
     await _enqueue_transcode(broker, video.id)
-    return _summary(video, user.display_name)
+    return to_summary(VideoRecord.from_row(video, user.display_name))
 
 
 @router.get("/me/videos", response_model=VideoPageOut)
 async def my_videos(
     user: CurrentUser,
     session: ReadSession,
+    redis: RedisDep,
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
 ) -> VideoPageOut:
-    """List the user's videos with keyset pagination, newest first."""
-    decoded = None
-    if cursor:
-        try:
-            decoded = decode_cursor(cursor)
-        except InvalidCursor as exc:
-            raise AppError(400, "INVALID_CURSOR", "That pagination cursor is invalid.") from exc
+    """List the user's videos with keyset pagination, newest first.
 
-    statement = select(Video, User.display_name).join(User, User.id == Video.owner_id)
-    statement = statement.where(Video.owner_id == user.id)
-    if decoded is not None:
+    Includes videos an admin took down, with the reason, so the owner can see why.
+    """
+    after = parse_cursor(cursor)
+    statement = (
+        select(Video, User.display_name)
+        .join(User, User.id == Video.owner_id)
+        .where(Video.owner_id == user.id)
+    )
+    if after is not None:
         statement = statement.where(
-            tuple_(Video.created_at, Video.id) < tuple_(decoded.created_at, decoded.video_id)
+            tuple_(Video.created_at, Video.id) < tuple_(after.created_at, after.video_id)
         )
     statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(limit + 1)
-    rows = list((await session.execute(statement)).tuples().all())
-    next_cursor = None
-    if len(rows) > limit:
-        rows.pop()
-        last = rows[-1][0]
-        next_cursor = encode_cursor(last.created_at, last.id)
-    return VideoPageOut(
-        items=[_summary(video, owner_name) for video, owner_name in rows],
-        next_cursor=next_cursor,
+    rows = (await session.execute(statement)).all()
+    records, next_cursor = _page(
+        [VideoRecord.from_row(video, owner_name) for video, owner_name in rows], limit
     )
+    return VideoPageOut(items=await summaries(redis, records), next_cursor=next_cursor)
 
 
 @router.get("/feed", response_model=VideoPageOut)
 async def public_feed(
+    response: Response,
     session: ReadSession,
+    redis: RedisDep,
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
 ) -> VideoPageOut:
-    """Return public ready videos from the replica using a keyset cursor."""
-    # Try cache first
-    cached_items, cached_cursor = await cache_service.get_cached_feed_page(1)
-    if cached_items is not None and cursor is None:
-        return VideoPageOut(
-            items=cached_items[:limit],
-            next_cursor=cached_cursor,
-        )
-
-    decoded = None
-    if cursor:
-        try:
-            decoded = decode_cursor(cursor)
-        except InvalidCursor as exc:
-            raise AppError(400, "INVALID_CURSOR", "That pagination cursor is invalid.") from exc
-
-    statement = (
-        select(Video, User.display_name)
-        .join(User, User.id == Video.owner_id)
-        .where(
-            Video.visibility == "public",
-            Video.status == "ready",
-            Video.removed_at.is_(None),
-        )
-    )
-    if decoded is not None:
-        statement = statement.where(
-            tuple_(Video.created_at, Video.id) < tuple_(decoded.created_at, decoded.video_id)
-        )
-    statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(limit + 1)
-    rows = list((await session.execute(statement)).tuples().all())
-    next_cursor = None
-    if len(rows) > limit:
-        rows.pop()
-        last = rows[-1][0]
-        next_cursor = encode_cursor(last.created_at, last.id)
-
-    items = [_summary(video, owner_name) for video, owner_name in rows]
-    
-    # Cache the first page
-    if len(items) > 0 and cursor is None:
-        await cache_service.cache_feed_page(1, items, next_cursor)
-    
-    return VideoPageOut(
-        items=items,
-        next_cursor=next_cursor,
-    )
+    """Public ready videos, newest first. The first page is cached for 30 seconds;
+    deeper pages read the replica with a keyset cursor, never OFFSET."""
+    after = parse_cursor(cursor)
+    if after is None:
+        head, hit = await cache.get_feed_head(redis, session)
+        response.headers["X-Cache"] = "HIT" if hit else "MISS"
+        records, next_cursor = _page(head, limit)
+    else:
+        response.headers["X-Cache"] = "BYPASS"
+        records, next_cursor = _page(await cache.load_feed(session, after, limit + 1), limit)
+    return VideoPageOut(items=await summaries(redis, records), next_cursor=next_cursor)
 
 
-@router.get("/videos/{video_ref}", response_model=VideoSummaryOut)
-async def get_video(video_ref: str, session: ReadSession, user_id: AccessUserId) -> VideoSummaryOut:
-    """Return metadata for a public/unlisted video or its owner's private video."""
-    # Try cache first
-    if user_id is not None:
-        cached = await cache_service.get_cached_video_meta(int(video_ref) if video_ref.isdecimal() else None)
-        if cached is not None:
-            # Reconstruct Video object from cache or use cached data
-            # For now, fall through to DB
-            pass
-    
-    row = (
-        await session.execute(
-            select(Video, User.display_name)
-            .join(User, User.id == Video.owner_id)
-            .where(_video_ref_filter(video_ref))
-        )
-    ).first()
-    video, owner_name = row.tuple() if row is not None else (None, "")
-    if (
-        video is None
-        or video.removed_at is not None
-        or (video.visibility == "private" and video.owner_id != user_id)
-    ):
-        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
-    if video.status != "ready" and video.owner_id != user_id:
-        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
-    
-    # Cache the metadata
-    summary_data = {
-        "id": video.id,
-        "public_id": video.public_id,
-        "owner_name": owner_name,
-        "title": video.title,
-        "description": video.description,
-        "visibility": video.visibility,
-        "status": video.status,
-        "size_bytes": video.original_size_bytes,
-        "content_type": video.original_content_type,
-        "duration_s": video.duration_s,
-        "renditions": video.renditions,
-        "thumbnail_key": video.thumbnail_key,
-        "playback_url": (f"/media/{video.public_id}/master.m3u8" if video.status == "ready" else None),
-        "thumbnail_url": (
-            f"/media/{video.public_id}/thumbnail.jpg" if video.thumbnail_key is not None else None
-        ),
-        "view_count": video.view_count,
-        "failure_reason": video.failure_reason,
-        "created_at": video.created_at,
-        "updated_at": video.updated_at,
-    }
-    await cache_service.cache_video_meta(video.id, summary_data)
-    
-    return _summary(video, owner_name)
-
-
-@router.post("/videos/{video_ref}/view")
-async def count_video_view(
+@router.get(
+    "/videos/{video_ref}",
+    response_model=VideoSummaryOut,
+    responses={410: {"description": "The owner's video was taken down by an admin"}},
+)
+async def get_video(
     video_ref: str,
+    response: Response,
     session: ReadSession,
     redis: RedisDep,
-    user_id: AccessUserId,
-    ip: str = Depends(client_ip),
-) -> dict[str, bool]:
-    """Count at most one view per user or IP for a video during one hour."""
-    video = await session.scalar(select(Video).where(_video_ref_filter(video_ref)))
-    if (
-        video is None
-        or video.removed_at is not None
-        or video.status != "ready"
-        or (video.visibility == "private" and video.owner_id != user_id)
-    ):
-        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
-    viewer = str(user_id) if user_id is not None else ip
-    marker = f"viewed:{video.id}:{viewer}"
-    if not await redis.set(marker, "1", nx=True, ex=60 * 60):
-        return {"counted": False}
-    await redis.incr(f"views:{video.id}")
-    await redis.sadd("views:dirty", video.id)
-    return {"counted": True}
-
-
-@router.get("/internal/authz", include_in_schema=False)
-async def internal_authz(
-    video_ref: str,
-    session: ReadSession,
-    settings: SettingsDep,
-    request: Request,
-    user: CurrentUser,
-) -> tuple[int, str]:
-    """nginx auth_request endpoint: 204 if authorized, 403 otherwise.
-
-    Called by nginx internal subrequest. The user's access cookie is attached
-    by the browser (SameSite=Lax) and decoded by the existing CurrentUser dep.
-    """
-    from app.db.models import User as _User
-
-    video = await session.scalar(
-        select(Video).where(_video_ref_filter(video_ref))
-    )
-    if video is None:
-        return 404, "VIDEO_NOT_FOUND"
-
-    if user is None:
-        # Anonymous viewer: only public/ready videos
-        if (
-            video.visibility in ("public", "unlisted")
-            and video.removed_at is None
-            and video.status == "ready"
-        ):
-            return 204, ""
-        return 403, "FORBIDDEN"
-
-    # Owner or admin
-    if video.owner_id == user.id or user.role == "admin":
-        if video.removed_at is not None:
-            return 200, "REMOVED"  # owner/admin can see removed videos
-        return 204, ""
-
-    # Logged-in but not owner
-    if video.visibility == "private" and video.removed_at is None:
-        return 403, "FORBIDDEN"
-    if video.visibility in ("public", "unlisted") and video.removed_at is None and video.status == "ready":
-        return 204, ""
-    return 403, "FORBIDDEN"
+    actor: OptionalActor,
+) -> VideoSummaryOut:
+    """Metadata and status. Cached for five minutes, checked against the policy per caller."""
+    record, hit = await cache.get_video_record(redis, session, video_ref)
+    response.headers["X-Cache"] = "HIT" if hit else "MISS"
+    if record is None:
+        raise _not_found()
+    if not can(actor, "view", record):
+        if record.removed_at is not None and is_owner(actor, record):
+            raise _removed(record)
+        raise _not_found()
+    pending = await cache.pending_views(redis, [record.id])
+    return to_summary(record, pending.get(record.id, 0))
 
 
 @router.patch("/videos/{video_ref}", response_model=VideoSummaryOut)
 async def update_video(
     video_ref: str,
-    body: dict[str, Any],
+    body: VideoUpdateIn,
     user: CurrentUser,
     session: WriteSession,
+    redis: RedisDep,
+    settings: SettingsDep,
 ) -> VideoSummaryOut:
-    """Edit title, description, or visibility. Owner only."""
-    video = await session.scalar(
-        select(Video).where(_video_ref_filter(video_ref), Video.owner_id == user.id)
-    )
-    if video is None:
-        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
+    """Change the title, description or visibility. Owner only."""
+    video = await _owned_video_for_update(session, video_ref, user)
+    if not can(user, "edit", video):
+        if video.removed_at is not None and is_owner(user, video):
+            raise _removed(video)
+        raise AppError(403, "FORBIDDEN", "Only the uploader can edit this video.")
 
-    if "title" in body:
-        video.title = body["title"]
-    if "description" in body:
-        video.description = body["description"]
-    if "visibility" in body:
-        if body["visibility"] not in ("public", "unlisted", "private"):
-            raise AppError(400, "INVALID_VISIBILITY", "Visibility must be public, unlisted, or private.")
-        video.visibility = body["visibility"]
-
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(video, field, value)
     await session.commit()
     await session.refresh(video)
-    # Invalidate cache on write
-    if user_id is not None:
-        await cache_service.invalidate_video_meta(video.id)
-        # Invalidate feed cache for first page
-        await cache_service.invalidate_feed_page(1)
-    return _summary(video, user.display_name)
+    await mark_user_wrote(redis, user.id, settings.rw_flag_ttl_s)
+    await cache.publish_video_change(redis, session, video.public_id)
+    return to_summary(VideoRecord.from_row(video, user.display_name))
 
 
 @router.delete("/videos/{video_ref}", status_code=status.HTTP_204_NO_CONTENT)
@@ -506,29 +406,57 @@ async def delete_video(
     video_ref: str,
     user: CurrentUser,
     session: WriteSession,
+    redis: RedisDep,
+    settings: SettingsDep,
     storage: StorageDep,
 ) -> None:
-    """Permanently delete a video and its objects. Owner only."""
-    video = await session.scalar(
-        select(Video).where(_video_ref_filter(video_ref), Video.owner_id == user.id)
-    )
-    if video is None:
-        raise AppError(404, "VIDEO_NOT_FOUND", "That video does not exist.")
+    """Delete the video, its original and every generated file. Owner only.
 
-    # Delete objects from storage
-    if video.original_key:
-        await storage.delete_object(video.original_key)
-    if video.thumbnail_key:
-        await storage.delete_object(video.thumbnail_key)
-    for rendition in video.renditions or {}:
-        key = rendition.get("key") or f"videos/{video.public_id}/{rendition.get('name')}"
-        await storage.delete_object(key)
+    Objects go first: if storage is down the row stays and the owner can retry,
+    rather than leaving files nothing points at. A transcode that finishes
+    after this finds no row and removes what it uploaded (see the worker).
+    """
+    video = await _owned_video_for_update(session, video_ref, user)
+    if not can(user, "delete", video):
+        raise AppError(403, "FORBIDDEN", "Only the uploader can delete this video.")
 
-    video.removed_at = func.now()
-    video.removed_by = user.id
-    video.removal_reason = "deleted by owner"
-    # Invalidate cache on write
-    await cache_service.invalidate_video_meta(video.id)
-    await cache_service.invalidate_feed_page(1)
+    public_id = video.public_id
+    try:
+        if video.multipart_upload_id:
+            await storage.abort_multipart_upload(video.original_key, video.multipart_upload_id)
+        await storage.delete_upload(video.original_key)
+        await storage.delete_media_prefix(f"videos/{public_id}/")
+    except StorageError as exc:
+        await session.rollback()
+        raise _storage_unavailable() from exc
+
+    await session.delete(video)
     await session.commit()
-    await session.refresh(video)
+    await mark_user_wrote(redis, user.id, settings.rw_flag_ttl_s)
+    await cache.publish_video_change(redis, session, public_id)
+    logger.info("Video %s deleted by its owner", public_id)
+
+
+@router.post("/videos/{video_ref}/view")
+async def count_video_view(
+    video_ref: str,
+    session: ReadSession,
+    redis: RedisDep,
+    actor: OptionalActor,
+    ip: str = Depends(client_ip),
+) -> dict[str, bool]:
+    """Count at most one view per user or IP for a video during one hour.
+
+    The count goes to Redis only; a scheduled task adds it to Postgres every minute.
+    """
+    record, _ = await cache.get_video_record(redis, session, video_ref)
+    if record is None or record.status != "ready" or not can(actor, "view", record):
+        raise _not_found()
+    viewer = str(actor.id) if actor is not None else ip
+    if not await redis.set(f"viewed:{record.id}:{viewer}", "1", nx=True, ex=60 * 60):
+        return {"counted": False}
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.incr(f"views:{record.id}")
+        pipe.sadd("views:dirty", record.id)
+        await pipe.execute()
+    return {"counted": True}

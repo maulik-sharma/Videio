@@ -131,6 +131,34 @@ class S3Storage:
         except (BotoCoreError, ClientError, OSError, TimeoutError):
             return
 
+    async def delete_upload(self, key: str) -> None:
+        """Delete an original. Unlike delete_object, failures raise: callers must know."""
+        try:
+            async with self._client() as client:
+                await client.delete_object(Bucket=self.upload_bucket, Key=key)
+        except (BotoCoreError, ClientError, OSError, TimeoutError) as exc:
+            raise StorageError("Object storage could not delete the original.") from exc
+
+    async def delete_media_prefix(self, prefix: str) -> int:
+        """Delete every generated object under `prefix`. Returns how many were deleted."""
+        deleted = 0
+        try:
+            async with self._client() as client:
+                paginator = client.get_paginator("list_objects_v2")
+                async for page in paginator.paginate(Bucket=self.media_bucket, Prefix=prefix):
+                    keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
+                    if not keys:
+                        continue
+                    response = await client.delete_objects(
+                        Bucket=self.media_bucket, Delete={"Objects": keys, "Quiet": True}
+                    )
+                    if response.get("Errors"):
+                        raise StorageError("Object storage could not delete some media files.")
+                    deleted += len(keys)
+        except (BotoCoreError, ClientError, OSError, TimeoutError) as exc:
+            raise StorageError("Object storage could not delete media files.") from exc
+        return deleted
+
     async def abort_multipart_upload(self, key: str, upload_id: str) -> None:
         """Abort an upload as best effort after a failed API transaction."""
         try:

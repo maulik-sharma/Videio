@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from taskiq import TaskiqMessage
 
 from app.db.models import TranscodeAttempt, Video
+from app.services import cache
 from app.services.storage import StorageError
 from app.worker.broker import MAX_ATTEMPTS, broker
 from app.worker.ffmpeg import (
@@ -63,6 +64,8 @@ async def _mark_failed(video_id: int, attempt_id: int, exc: PermanentTranscodeEr
             attempt.outcome = "failed"
             attempt.error = exc.detail[:2000]
         await session.commit()
+        if video is not None:
+            await cache.publish_video_change(resources.redis, session, video.public_id, feed=False)
 
 
 async def mark_exhausted(message: TaskiqMessage, exception: BaseException) -> None:
@@ -86,6 +89,7 @@ async def mark_exhausted(message: TaskiqMessage, exception: BaseException) -> No
             video.status = "failed"
             video.failure_reason = EXHAUSTED_REASON
             await session.commit()
+            await cache.publish_video_change(resources.redis, session, video.public_id, feed=False)
 
 
 @broker.task(retry_on_error=True, max_retries=MAX_ATTEMPTS, dead_letter=True)
@@ -138,6 +142,7 @@ async def _transcode(video_id: int) -> None:
             attempt_id = attempt.id
             original_key = video.original_key
             public_id = video.public_id
+            await cache.publish_video_change(resources.redis, session, public_id, feed=False)
 
         with TemporaryDirectory(prefix=f"videio-{video_id}-") as temp_dir:
             workdir = Path(temp_dir) / "hls"
@@ -177,14 +182,21 @@ async def _transcode(video_id: int) -> None:
 
             async with resources.db.write_sessions() as session:
                 video = await session.get(Video, video_id, with_for_update=True)
-                if video is None or video.removed_at is not None:
+                if video is None:
+                    # The owner deleted the video while it was transcoding. Their
+                    # delete already ran, so remove what this job just uploaded.
+                    await resources.storage.delete_media_prefix(f"{media_prefix}/")
+                    await _finish_attempt(attempt_id, outcome="deleted")
                     return
+                # A takedown during the transcode still records the result; the
+                # video stays hidden until an admin restores it.
                 video.status = "ready"
                 video.duration_s = probe.duration_s
                 video.renditions = rendition_data
                 video.thumbnail_key = f"{media_prefix}/{thumbnail.name}"
                 video.failure_reason = None
                 await session.commit()
+                await cache.publish_video_change(resources.redis, session, public_id)
             await _finish_attempt(attempt_id, outcome="ready")
     except PermanentTranscodeError as exc:
         if attempt_id is not None:

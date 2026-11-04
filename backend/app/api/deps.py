@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Request
@@ -70,13 +71,33 @@ async def db_write(db: DbDep) -> AsyncIterator[AsyncSession]:
 WriteSession = Annotated[AsyncSession, Depends(db_write)]
 
 
-def access_user_id(request: Request, settings: SettingsDep) -> uuid.UUID | None:
-    """User id from the access cookie, or None. Signature check only, no DB lookup."""
+@dataclass(frozen=True)
+class TokenActor:
+    """The caller as their access token describes them, for `policy.can`.
+
+    Read from the signed cookie without a database lookup, so anonymous-friendly
+    reads (video pages, the edge's media checks) stay cheap. The role is the one
+    at login, at most one access-token lifetime old.
+    """
+
+    id: uuid.UUID
+    role: str
+
+
+def access_actor(request: Request, settings: SettingsDep) -> TokenActor | None:
+    """The caller from the access cookie, or None. Signature check only, no DB lookup."""
     token = request.cookies.get(ACCESS_COOKIE)
     if not token:
         return None
     claims = decode_access_token(token, settings.jwt_secret.get_secret_value())
-    return claims.user_id if claims else None
+    return TokenActor(id=claims.user_id, role=claims.role) if claims else None
+
+
+OptionalActor = Annotated[TokenActor | None, Depends(access_actor)]
+
+
+def access_user_id(actor: OptionalActor) -> uuid.UUID | None:
+    return actor.id if actor else None
 
 
 AccessUserId = Annotated[uuid.UUID | None, Depends(access_user_id)]

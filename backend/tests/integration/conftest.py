@@ -101,3 +101,60 @@ async def login(client: AsyncClient, account: Account) -> None:
         "/api/auth/login", json={"email": account.email, "password": account.password}
     )
     assert response.status_code == 200, response.text
+
+
+async def register_and_login(
+    app: FastAPI, email: str, *, display_name: str = "Ann", admin: bool = False
+) -> tuple[AsyncClient, Account]:
+    """A fresh client logged in as a new account. Close it with `aclose()`."""
+    from app import cli
+
+    client = make_client(app)
+    response = await client.post(
+        "/api/auth/register",
+        json={"email": email, "password": PASSWORD, "display_name": display_name},
+    )
+    assert response.status_code == 201, response.text
+    account = Account(id=uuid.UUID(response.json()["id"]), email=email, password=PASSWORD)
+    if admin:
+        # Before logging in: the access token carries the role it was issued with.
+        assert await cli.promote_admin(email)
+    await login(client, account)
+    return client, account
+
+
+async def insert_video(
+    db: Database,
+    owner_id: uuid.UUID,
+    *,
+    visibility: str = "public",
+    status: str = "ready",
+    title: str = "A clip",
+) -> str:
+    """A video row as the worker would leave it, without running a transcode."""
+    from app.core.ids import new_public_id
+
+    public_id = new_public_id()
+    async with db.write_engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO videos (public_id, owner_id, title, visibility, status,
+                                    original_key, original_size_bytes, original_content_type,
+                                    duration_s, thumbnail_key)
+                VALUES (:public_id, :owner_id, :title, :visibility, :status,
+                        :original_key, 1000, 'video/mp4', 3.0, :thumbnail_key)
+                """
+            ),
+            {
+                "public_id": public_id,
+                "owner_id": owner_id,
+                "title": title,
+                "visibility": visibility,
+                "status": status,
+                "original_key": f"originals/{public_id}",
+                "thumbnail_key": f"videos/{public_id}/thumbnail.jpg" if status == "ready" else None,
+            },
+        )
+    await wait_for_replica(db)
+    return public_id

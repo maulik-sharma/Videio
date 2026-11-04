@@ -1,163 +1,84 @@
-"""Policy / RBAC matrix tests for Videio."""
+"""The RBAC matrix from docs/plan.md, one parametrized case per cell."""
 
 import uuid
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 
-from app.core.policy import can
+import pytest
 
+from app.core.policy import Action, can
 
-def _u():
-    return uuid.uuid4()
-
-
-def _user(role="user", id_=None, **extra):
-    email = f"test@{role}.com"
-    kwargs = {"role": role, "id": id_ or _u(), "email": email, "display_name": role, **extra}
-    return type("User", (), kwargs)
+OWNER_ID = uuid.uuid4()
+REMOVED_AT = datetime(2026, 11, 1, tzinfo=UTC)
 
 
-def _video(**kwargs):
-    id_ = kwargs.pop("id", 1)
-    owner_id = kwargs.pop("owner_id", None)
-    return_type = type("Video", (), {
-        "id": id_,
-        "public_id": "3kTq9bZx1",
-        "owner_id": owner_id or _u(),
-        "title": "Test",
-        "visibility": kwargs.get("visibility", "public"),
-        "status": kwargs.get("status", "ready"),
-        "removed_at": kwargs.get("removed_at"),
-    })
-    # If owner_id not provided, set it to the same ID as the video for owner tests
-    if owner_id is None and "owner_id" not in str(return_type):
-        # We'll handle this in test setup instead
-        pass
-    return return_type
+@dataclass(frozen=True)
+class FakeActor:
+    id: uuid.UUID
+    role: str
 
 
-def _video_with_owner(owner_id, **kwargs):
-    return _video(owner_id=owner_id, **kwargs)
+@dataclass(frozen=True)
+class FakeVideo:
+    owner_id: uuid.UUID = OWNER_ID
+    visibility: str = "public"
+    status: str = "ready"
+    removed_at: datetime | None = None
 
 
-def _video_public():
-    return _video(visibility="public", status="ready", removed_at=None)
+ACTORS: dict[str, FakeActor | None] = {
+    "anonymous": None,
+    "user": FakeActor(uuid.uuid4(), "user"),
+    "owner": FakeActor(OWNER_ID, "user"),
+    "admin": FakeActor(uuid.uuid4(), "admin"),
+}
+
+PUBLIC = FakeVideo()
+UNLISTED = FakeVideo(visibility="unlisted")
+PRIVATE = FakeVideo(visibility="private")
+REMOVED = FakeVideo(removed_at=REMOVED_AT)
+PROCESSING = FakeVideo(status="processing")
+
+# (action, video, actors allowed). Every actor not listed must be refused.
+MATRIX: list[tuple[str, Action, FakeVideo, set[str]]] = [
+    ("view public", "view", PUBLIC, {"anonymous", "user", "owner", "admin"}),
+    ("view unlisted", "view", UNLISTED, {"anonymous", "user", "owner", "admin"}),
+    ("view private", "view", PRIVATE, {"owner", "admin"}),
+    ("view removed", "view", REMOVED, {"admin"}),
+    ("view removed private", "view", replace(PRIVATE, removed_at=REMOVED_AT), {"admin"}),
+    ("view not yet ready", "view", PROCESSING, {"owner", "admin"}),
+    ("edit", "edit", PUBLIC, {"owner"}),
+    ("edit private", "edit", PRIVATE, {"owner"}),
+    ("edit removed", "edit", REMOVED, set()),
+    ("delete own", "delete", PUBLIC, {"owner"}),
+    ("delete own removed", "delete", REMOVED, {"owner"}),
+    ("take down", "takedown", PUBLIC, {"admin"}),
+    ("take down private", "takedown", PRIVATE, {"admin"}),
+    ("take down twice", "takedown", REMOVED, set()),
+    ("restore", "restore", REMOVED, {"admin"}),
+    ("restore a live video", "restore", PUBLIC, set()),
+]
+
+CASES = [
+    pytest.param(actor_name, action, video, actor_name in allowed, id=f"{label}-{actor_name}")
+    for label, action, video, allowed in MATRIX
+    for actor_name in ACTORS
+]
 
 
-def _video_unlisted():
-    return _video(visibility="unlisted", status="ready", removed_at=None)
+@pytest.mark.parametrize(("actor_name", "action", "video", "expected"), CASES)
+def test_matrix(actor_name: str, action: Action, video: FakeVideo, expected: bool) -> None:
+    assert can(ACTORS[actor_name], action, video) is expected
 
 
-def _video_private(owner_id=None):
-    return _video(visibility="private", removed_at=None, owner_id=owner_id)
+@pytest.mark.parametrize(("actor_name", "expected"), [("admin", True), ("anonymous", False)])
+def test_only_admins_disable_users(actor_name: str, expected: bool) -> None:
+    assert can(ACTORS[actor_name], "disable_user") is expected
+    if not expected:
+        assert can(ACTORS["user"], "disable_user") is False
+        assert can(ACTORS["owner"], "disable_user") is False
 
 
-def _video_removed():
-    return _video(visibility="private", removed_at="2024-01-01")
-
-
-def _user_admin(id_=None):
-    return _user("admin", id=id_)
-
-
-def _user_user(id_=None):
-    return _user("user", id=id_)
-
-
-def test_admin_can_disable_user():
-    admin = _user_admin()
-    assert can(admin, "disable_user") is True
-
-
-def test_non_admin_cannot_disable_user():
-    user = _user_user()
-    assert can(user, "disable_user") is False
-
-
-def test_owner_can_view_private():
-    owner_id = _u()
-    owner = _user_user(owner_id)
-    video = _video_private(owner_id)
-    assert can(owner, "view_private", video) is True
-
-
-def test_non_owner_cannot_view_private():
-    viewer_id = _u()
-    owner_id = _u()
-    user = _user_user(viewer_id)
-    video = _video_private(owner_id)
-    assert can(user, "view_private", video) is False
-
-
-def test_owner_can_edit_own():
-    owner_id = _u()
-    owner = _user_user(owner_id)
-    video = _video_private(owner_id=owner_id)
-    assert can(owner, "edit_own", video) is True
-
-
-def test_non_owner_cannot_edit_own():
-    viewer_id = _u()
-    owner_id = _u()
-    user = _user_user(viewer_id)
-    video = _video_private(owner_id=owner_id)
-    assert can(user, "edit_own", video) is False
-
-
-def test_owner_can_delete_own():
-    owner_id = _u()
-    owner = _user_user(owner_id)
-    video = _video_private(owner_id=owner_id)
-    assert can(owner, "delete_own", video) is True
-
-
-def test_non_owner_cannot_delete_own():
-    viewer_id = _u()
-    owner_id = _u()
-    user = _user_user(viewer_id)
-    video = _video_private(owner_id=owner_id)
-    assert can(user, "delete_own", video) is False
-
-
-def test_admin_can_takedown_any():
-    admin = _user_admin()
-    video = _video_private()
-    assert can(admin, "takedown", video) is True
-
-
-def test_admin_can_restore_any():
-    admin = _user_admin()
-    video = _video_removed()
-    assert can(admin, "restore", video) is True
-
-
-def test_admin_can_view_removed():
-    admin = _user_admin()
-    video = _video_removed()
-    assert can(admin, "view_removed", video) is True
-
-
-def test_non_admin_cannot_view_removed():
-    user = _user_user()
-    video = _video_removed()
-    assert can(user, "view_removed", video) is False
-
-
-def test_anonymous_cannot_view_private():
-    video = _video_private()
-    assert can(None, "view_private", video) is False
-
-
-def test_anonymous_can_view_public():
-    video = _video_public()
-    assert can(None, "view_public", video) is True
-
-
-def test_anonymous_can_view_unlisted():
-    video = _video_unlisted()
-    assert can(None, "view_unlisted", video) is True
-
-
-def test_anonymous_cannot_view_private_or_removed():
-    video_private = _video_private()
-    video_removed = _video_removed()
-    assert can(None, "view_private", video_private) is False
-    assert can(None, "view_removed", video_removed) is False
+def test_video_actions_need_a_video() -> None:
+    with pytest.raises(ValueError, match="needs a video"):
+        can(ACTORS["owner"], "edit")
