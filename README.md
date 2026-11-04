@@ -18,9 +18,14 @@ Live deployment: <https://videio.mauliksharma.org>
   and a dead-letter queue; a single scheduler runs the view
   counter flush, the stuck-job reaper and abandoned-upload cleanup; the public
   feed and the video page with an HLS player.
-
-Private-media authorization, admin moderation, caching and load tests are
-planned for later phases.
+- Phase 4: one `can(actor, action, video)` policy with a matrix test; owners
+  edit and delete their videos; admins take videos down and restore them and
+  disable accounts, each recorded in `audit_log`; nginx `auth_request` checks
+  every `/media/` request, so private videos play only for their owner.
+- Phase 5: Redis cache-aside for video pages and the feed (`X-Cache`) with
+  write-through invalidation, write-behind view counters, per-user upload and
+  per-IP request limits, an edge cache for public media only, the admin System
+  panel and k6 load tests in [`load-tests/`](load-tests/README.md).
 
 ## Run locally
 
@@ -76,7 +81,10 @@ read-your-writes routing. SeaweedFS exposes S3-compatible `uploads` and
 directly to SeaweedFS; the API never proxies the file bytes. Completing an
 upload queues a `transcode_video` task on RabbitMQ. Worker containers run
 ffmpeg, write HLS renditions and a thumbnail to the `media` bucket, and the
-edge serves them from an nginx cache under `/media/`. Scale workers with
+edge serves them under `/media/`, asking the API (`auth_request`) whether
+each viewer may see the video and caching only public and unlisted ones.
+Redis caches video records and the first feed page, counts views (flushed to
+Postgres every minute) and holds the rate-limit buckets. Scale workers with
 `docker compose up -d --scale worker=3`.
 
 See [`docs/design.md`](docs/design.md) for design trade-offs and
@@ -85,7 +93,6 @@ Manager setup.
 
 ## Future work
 
-Private media authorization, admin takedown, cache-aside reads and load-test
-results are future work. Comments, likes, subscriptions, search,
+Comments, likes, subscriptions, search,
 recommendations, email verification, password reset and live streaming remain
 out of scope.

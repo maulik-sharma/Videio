@@ -125,8 +125,21 @@ ranges, and then overwrites `X-Forwarded-For` with that single address.
 Appending would let a client prepend a fake address, which uvicorn would
 believe.
 
+**Uploads** are limited per account the same way: 10 an hour
+(`upload:user:{id}`). The bucket is per account, not per API replica, because
+it lives in Redis, so running two API containers does not double the limit.
+
+**At the edge**, nginx `limit_req` caps each IP at 20 API requests a second
+(burst 50) and 2 a second on `/api/auth/` (burst 10). Over the limit it answers
+429 itself, in the API's error shape with `Retry-After: 1`, before a request
+reaches Python. The Redis buckets are precise and per account; the nginx limit
+is coarse and per IP, and its job is to absorb floods cheaply. Media requests
+are not limited: a player legitimately fetches many segments a second.
+
 **How to see it.** Six quick wrong logins for one email: the sixth returns 429
-with `Retry-After`. `tests/integration/test_rate_limits.py` covers both limits.
+with `Retry-After`. `tests/integration/test_rate_limits.py` covers both limits,
+and `test_caching.py` the upload limit. For the edge limit, fire 100 parallel
+requests at `/api/feed`: some come back 429.
 
 ## No sharding
 
@@ -136,31 +149,7 @@ more containers for no gain. It would become worth considering when write
 volume or table size outgrows a single primary, even after adding replicas and
 caching.
 
-## Rate limiting
-
-**What.** A token bucket per key in Redis, updated atomically by a Lua script
-that uses Redis' clock, so all API replicas share one view. Register allows 5
-per minute per IP. Login allows 5 per minute per email address,
-case-insensitive. Over the limit, the API answers 429 with `Retry-After`.
-Nginx also enforces `limit_req` per IP for the API endpoint.
-
-**Why.** Login is limited per email because that is what password guessing
-targets: one IP or many, each account gets 5 guesses a minute. A token bucket
-refills smoothly (one token every 12 seconds) instead of resetting all at once
-at a window boundary. The nginx `limit_req` provides an additional per-IP
-defense-in-depth layer.
-
-**Trade-off.** Per-email limiting lets anyone who knows an email lock its owner
-out of logging in for about a minute at a time. That is acceptable here; a
-larger system would combine per-email and per-IP buckets, or use a CAPTCHA,
-before locking. The nginx `limit_req` zone (10 requests/second) is a
-coarse limit; fine-grained per-user limits are handled by the Redis bucket.
-
-**How to see it.** Six quick wrong logins for one email: the sixth returns 429
-with `Retry-After`. `tests/integration/test_rate_limits.py` covers both limits.
-Check nginx logs for `limit_req` rejections.
-
-## Cache-aside and X-Cache header
+## Direct-to-storage multipart uploads
 
 **What.** `POST /api/videos` stores only video metadata in the primary database,
 starts an S3 multipart upload in SeaweedFS, and returns one SigV4-presigned PUT
@@ -191,33 +180,158 @@ requests go to `/uploads/…`, which the edge hands to SeaweedFS. The **My
 videos** page shows the row as `Pending upload` until the completion request
 changes it to `Uploaded`.
 
-## Cache-aside and X-Cache header
+## Authorization: one policy function
 
-**What.** The API uses Redis cache-aside pattern for video metadata and the public
-feed. Frequently accessed data is cached with TTLs: video metadata for 5 minutes
-(`video:{id}`) and the first page of the public feed for 30 seconds (`feed:page:1`).
-Nginx adds `X-Cache: HIT` or `X-Cache: MISS` headers to indicate cache status.
+**What.** `app/core/policy.py` has one pure function, `can(actor, action, video)`.
+Routes never check ownership or visibility themselves; they ask the policy.
+Its rules, tested cell by cell in `tests/unit/test_policy.py`:
 
-**Why.** Caching read-heavy operations (video lookups, feed retrieval) reduces
-database load and improves response latency. The `X-Cache` header allows
-observability and demo purposes (see k6 load test results in `docs/design.md`).
+| Action | Anonymous | Logged in | Owner | Admin |
+| --- | --- | --- | --- | --- |
+| View public or unlisted | yes | yes | yes | yes |
+| View private | no | no | yes | yes |
+| View removed | no | no | no, sees a notice | yes |
+| Edit title, description, visibility | no | no | yes, unless removed | no |
+| Delete | no | no | yes | no |
+| Take down, restore | no | no | no | yes, with a reason |
+| Disable an account | no | no | no | yes, with a reason |
 
-**Trade-off.** Cached data can be stale; cache invalidation on every write path
-(`update_video`, `delete_video`, `complete_video_upload`) ensures consistency
-at the cost of additional Redis operations. The 5-minute TTL for video metadata
-is a reasonable compromise—long enough to reduce DB load, short enough that
-visibility changes propagate quickly.
+A video that is not `ready` yet is visible only to its owner and admins.
 
-**How to see it.** Run k6 load tests (`k6 run load-tests/feed_and_video.k6`).
-The `X-Cache: HIT` header should appear on subsequent requests within the TTL.
-Changing a video's visibility should invalidate the cache, and the next request
-should show `X-Cache: MISS` followed by `X-Cache: HIT` after the new data is
-cached.
+**Why.** Rules repeated in several handlers drift apart. A pure function with
+no database access is cheap enough to call on every media request, and its
+matrix test documents the rules better than prose.
 
-**When for real.** When read load significantly exceeds write load and the
-working set fits in memory. At Videio's size, one Postgres instance with Redis
-cache is sufficient; a real system would add a dedicated cache layer (Redis or
-Valkey) with read-through/write-through patterns.
+**Trade-off.** The routes still choose which error to show: someone who may
+not see a video gets 404, so private ids do not leak; someone who may see it but
+not change it gets 403; the owner of a removed video gets 410 with the reason.
+The anonymous-friendly reads (`GET /api/videos/{id}`, `/internal/authz`) take
+the role from the signed access token instead of the database, so a role change
+or a disable reaches them within one token lifetime (15 minutes). Every route
+that needs a logged-in user re-reads the account and refuses a disabled one.
+
+## Takedowns and the audit log
+
+**What.** Admins take a video down or restore it, and disable accounts, through
+`/api/admin/...`, always with a reason. Each action inserts an `audit_log` row
+(who, what, which target, why) in the same transaction as the change. A
+takedown sets `removed_at`, `removed_by` and `removal_reason`; the video leaves
+the feed, its page and its media, and the owner sees the reason in My videos
+and on the video's URL. Disabling an account also revokes all its refresh
+tokens. Owners delete their own videos for good: the original, every generated
+file and the row.
+
+**Why.** A takedown is reversible and keeps the evidence, which a delete does
+not, so admins take down and owners delete. Writing the audit row in the same
+transaction means there is never an action without a record.
+
+**Trade-off.** The transcode keeps going if a video is taken down mid-job, so a
+restore needs no re-run. A delete removes the objects before the row: if
+storage is down the delete fails and can be retried, rather than leaving files
+nothing points at. A transcode that finishes after the delete finds no row and
+removes what it uploaded.
+
+**How to see it.** Open **Admin**, take a video down, and open its link as the
+owner (notice with the reason) and logged out (not found). The **Recent admin
+actions** list shows the audit rows. `tests/integration/test_video_rbac.py`
+covers each step.
+
+## Authorization at the edge
+
+**What.** Every request under `/media/` (playlists, segments, thumbnails) first
+goes through nginx `auth_request` to `/internal/authz?video={publicId}` on the
+API, carrying the browser's cookies. The API answers 204 or 403 from the cached
+video record and the access token, with no database query. The location is
+`internal`, so browsers cannot call it directly.
+
+**Why.** Session cookies, not `Authorization` headers, were chosen so that
+hls.js segment requests carry identity automatically. That makes it possible to
+check private videos per segment while still letting nginx stream the bytes
+from SeaweedFS.
+
+**Trade-off.** Every segment costs one small API call, even when the segment
+itself is in the edge cache; the call is a Redis read, so it is cheap. The
+check runs before the cache, so making a video private or taking it down takes
+effect on the next segment, even for copies already cached. Media responses
+leave the edge as `Cache-Control: private`: a shared cache in front of NPM
+(Cloudflare) must not keep copies, or it would serve them without asking.
+
+**How to see it.** Make a ready video private. As the owner it still plays; a
+logged-out browser gets 403 for `master.m3u8` even with the exact URL. The e2e
+smoke test checks this through the real edge.
+
+## Edge caching
+
+**What.** nginx `proxy_cache` keeps public and unlisted HLS objects and
+thumbnails for 7 days (`X-Edge-Cache: HIT` on the second load). The authz
+response says whether a video may be cached (`X-Media-Cacheable`); private
+videos bypass the cache in both directions.
+
+**Why.** Generated objects never change (a retry overwrites the same keys with
+the same content), so they can be cached for a long time, and most requests
+for popular videos never reach storage.
+
+**Trade-off.** A deleted video's segments may sit in the cache until they go
+unused for 7 days, but the authz check refuses them, so they are never served.
+The cache is per edge container; several edges would each warm their own.
+
+**How to see it.** Load a public video's thumbnail twice and compare
+`X-Edge-Cache`: `MISS`, then `HIT`. A private video's always shows `BYPASS`.
+
+## Cache-aside for videos and the feed
+
+**What.** `GET /api/videos/{id}` reads `video:{publicId}` from Redis (5
+minutes); `GET /api/feed` without a cursor reads `feed:head`, the newest 51
+public videos (30 seconds), enough for any page size. On a miss the API reads
+the database (the replica) and fills the key with `SET NX`. Responses carry
+`X-Cache: HIT` or `MISS`; deeper feed pages say `BYPASS` and always use the
+keyset query. The cached record holds what the policy needs (owner, visibility,
+status, removal), so access is still checked per caller on a hit.
+
+**Invalidation.** Every write path (upload complete, owner edit and delete,
+takedown and restore, each worker status change) calls `publish_video_change`
+after committing. It reloads the row *from the primary* and overwrites the key,
+and rebuilds the feed head when the change could affect it. The maintenance
+tasks (view flush, reaper, cleanup) delete the keys instead.
+
+**Why.** A plain delete-on-write has a race that the replica makes worse: right
+after the delete, a reader misses, reads the replica before it has replayed the
+write, and puts the old row back for 5 minutes. Overwriting with the primary's
+row, while readers only ever fill with `SET NX`, closes that window: once the
+fresh value is in Redis, a stale reader's fill fails.
+`test_writes_replace_cached_data_even_while_the_replica_lags` pauses the
+replica to prove it.
+
+**Trade-off.** A write costs one or two extra primary queries. View counts in a
+cached record can be up to a flush behind, so the API adds the pending Redis
+count on every read (see below). At this size Postgres alone would be fast
+enough; the cache is here to show the pattern and to keep reads flat under
+load (see the k6 numbers in `load-tests/README.md`).
+
+**How to see it.** `curl -sI localhost:8080/api/feed | grep X-Cache` twice.
+Change a video's visibility, and the feed reflects it on the next request. The
+admin System panel shows hit ratios for both caches.
+
+## Write-behind view counters
+
+**What.** `POST /api/videos/{id}/view` counts at most one view per user (or IP)
+per video per hour (`SET NX EX`), then `INCR views:{id}` and `SADD views:dirty`.
+A scheduled task adds the counts to Postgres every minute in one `UPDATE`.
+Reads return the Postgres total plus the pending Redis count, so a view shows up
+at once.
+
+**Why.** A view is the most frequent write in the system. Turning it into a
+Redis increment keeps Postgres write load flat no matter how popular a video
+is.
+
+**Trade-off.** If Redis is lost, up to a minute of views is lost with it. The
+flush removes ids from `views:dirty` before reading their counts, so a view
+arriving mid-flush is counted in the next run, never twice. Views of removed
+videos are not counted.
+
+**How to see it.** Play a video: the count goes up at once, while the row in
+Postgres catches up within a minute. The System panel shows how many videos have
+views waiting to flush.
 
 ## Video metadata and public IDs
 
