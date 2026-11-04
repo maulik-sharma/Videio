@@ -120,6 +120,24 @@ image cannot start with the old stack definition, so:
 5. Upload a short video. It should go from `Processing` to `Ready` within a
    minute and play on its page.
 
+## Phase 4 and 5 rollout
+
+No new variables or services. The `migrate` job adds the `audit_log` table on
+the next deploy, and the admin System panel reads queue depths from RabbitMQ's
+management API at `http://rabbitmq:15672` with the broker's credentials (set
+`VIDEIO_RABBITMQ_MANAGEMENT_URL` only if it lives elsewhere).
+
+1. Merge the PR and let Deploy run as usual.
+2. Log in as an admin and open **Admin** in the sidebar. The panel should show
+   the queue, replica and cache numbers rather than an error.
+3. Make a test video private and open its `master.m3u8` URL in a private
+   window: it must answer 403.
+
+Media now leaves the edge with `Cache-Control: private`, so Cloudflare does not
+cache it. Keep it that way: a cache in front of the edge would serve copies
+without the per-viewer check. Page Rules and Cache Rules must not force caching
+of `/media/*`.
+
 ## Transcode failures and the DLQ
 
 Every transcode that gives up (bad input, or four failed attempts) marks the

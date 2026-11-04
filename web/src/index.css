@@ -1376,6 +1376,354 @@ h1 {
   white-space: nowrap;
 }
 
+/* ---------- Owner actions and dialogs ---------- */
+
+.button-small {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.button-danger {
+  border-color: var(--error);
+  background: var(--error);
+  color: #fff;
+}
+
+.button-danger:hover:not(:disabled) {
+  filter: brightness(0.92);
+  background: var(--error);
+}
+
+.button-quiet-danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--error);
+}
+
+.button-quiet-danger:hover:not(:disabled) {
+  background: var(--error-soft);
+}
+
+.owner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.owner-actions-compact {
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.owner-actions-compact .button {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.status-removed {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.notice-warn {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+.dialog-body {
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+}
+
+.dialog-title {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.dialog-text {
+  color: var(--text-2);
+}
+
+.dialog-body .notice {
+  margin: 0;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog .choice-group {
+  grid-template-columns: 1fr;
+}
+
+/* ---------- Admin ---------- */
+
+.page-admin {
+  display: grid;
+  gap: 40px;
+  max-width: 1600px;
+  margin-left: 0;
+}
+
+.page-admin > * {
+  min-width: 0;
+}
+
+.page-admin .page-heading {
+  margin-bottom: -16px;
+}
+
+.system {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  gap: 16px;
+}
+
+.stat-group {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.stat-group h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 16px 12px;
+  margin: 0;
+}
+
+.stat dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.stat dd {
+  display: grid;
+  margin: 2px 0 0;
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.stat-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* A problem is said in words (the detail line) and marked by a rule, not by colour alone. */
+.stat-bad {
+  padding-left: 8px;
+  border-left: 2px solid var(--error);
+}
+
+.stat-bad .stat-detail {
+  color: var(--error);
+}
+
+.stat-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.stat-skeleton {
+  height: 180px;
+  border-radius: var(--radius);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.section-heading h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.segmented button {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 550;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.table-wrap {
+  /* Contains the absolutely positioned visually-hidden header, so it scrolls too. */
+  position: relative;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.table-video {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 240px;
+}
+
+.table-video .thumb {
+  flex: none;
+  width: 96px;
+  border-radius: var(--radius-sm);
+}
+
+.table-video a {
+  color: var(--text);
+  font-weight: 550;
+  text-decoration: none;
+}
+
+.table-video a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.table-owner {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+}
+
+.table-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.table-cap {
+  text-transform: capitalize;
+}
+
+.table-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.table-status {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  max-width: 240px;
+}
+
+.table-nowrap {
+  white-space: nowrap;
+}
+
+.audit {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.audit li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+}
+
+.audit li + li {
+  border-top: 1px solid var(--border);
+}
+
+.audit time {
+  flex: none;
+  color: var(--muted);
+}
+
 /* ---------- Auth ---------- */
 
 .auth {

@@ -4,12 +4,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
-from app.api import admin, auth, health, users, videos
+from app.api import admin, auth, health, internal, users, videos
 from app.core.config import get_settings
 from app.core.errors import install_error_handlers
 from app.core.middleware import CsrfHeaderMiddleware, RequestIdMiddleware
 from app.db.engines import Database
-from app.services.cache import set_cache_service
 from app.services.storage import S3Storage
 from app.worker.broker import broker
 
@@ -21,7 +20,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
     app.state.storage = S3Storage.from_settings(settings)
     app.state.broker = broker
-    set_cache_service(app.state.redis)
     try:
         await broker.startup()
         yield
@@ -51,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(videos.router)
     app.include_router(admin.router)
+    app.include_router(internal.router)
     return app
 
 

@@ -56,3 +56,12 @@ export function SignInIcon() {
     </Icon>
   );
 }
+
+export function ShieldIcon() {
+  return (
+    <Icon>
+      <path d="M12 3.5 5 6v5.5c0 4.2 2.9 7.7 7 9 4.1-1.3 7-4.8 7-9V6l-7-2.5Z" />
+      <path d="m9 12 2 2 4-4" />
+    </Icon>
+  );
+}

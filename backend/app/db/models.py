@@ -110,13 +110,23 @@ class TranscodeAttempt(Base):
 
 
 class AuditLog(Base):
+    """Every admin action, with who did it and why. Rows are only ever inserted."""
+
     __tablename__ = "audit_log"
-    __table_args__ = ()
+    __table_args__ = (
+        CheckConstraint("target_type IN ('video', 'user')", name="audit_log_target_type_check"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    action: Mapped[str] = mapped_column(Text, nullable=False)
-    target_type: Mapped[str] = mapped_column(Text, nullable=False)
-    target_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    action: Mapped[str] = mapped_column(Text)
+    target_type: Mapped[str] = mapped_column(Text)
+    # A video's public id or a user's uuid, so one column fits both targets.
+    target_id: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+Index("ix_audit_log_target", AuditLog.target_type, AuditLog.target_id, AuditLog.id.desc())

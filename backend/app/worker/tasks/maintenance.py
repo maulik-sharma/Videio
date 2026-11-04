@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import case, func, select, text, update
 
 from app.db.models import TranscodeAttempt, Video
+from app.services import cache
 from app.worker.broker import MAX_ATTEMPTS, broker
 from app.worker.locks import redis_lock
 from app.worker.runtime import get_resources
@@ -38,12 +39,17 @@ async def flush_view_counters() -> None:
             return
 
         async with resources.db.write_sessions() as session:
-            await session.execute(
+            flushed = await session.scalars(
                 update(Video)
                 .where(Video.id.in_(counts))
                 .values(view_count=Video.view_count + case(counts, value=Video.id, else_=0))
+                .returning(Video.public_id)
             )
+            public_ids = list(flushed.all())
             await session.commit()
+        # Cached records still carry the old total, and the Redis share of the
+        # count just moved to Postgres, so drop them rather than undercount.
+        await cache.forget_videos(resources.redis, public_ids)
 
 
 @broker.task(schedule=[{"cron": "*/5 * * * *", "schedule_id": "reap_stuck_transcodes"}])
@@ -65,7 +71,7 @@ async def reap_stuck_jobs() -> None:
         async with resources.db.write_sessions() as session:
             rows = (
                 await session.execute(
-                    select(Video.id, func.count(TranscodeAttempt.id))
+                    select(Video.id, Video.public_id, func.count(TranscodeAttempt.id))
                     .outerjoin(TranscodeAttempt, TranscodeAttempt.video_id == Video.id)
                     .where(
                         Video.status == "processing",
@@ -77,10 +83,12 @@ async def reap_stuck_jobs() -> None:
             ).all()
             retry_ids: list[int] = []
             give_up_ids: list[int] = []
-            for video_id, attempts in rows:
+            changed: list[str] = []
+            for video_id, public_id, attempts in rows:
                 if await resources.redis.exists(f"transcode:lock:{video_id}"):
                     continue  # still being worked on
                 (give_up_ids if attempts >= MAX_ATTEMPTS else retry_ids).append(video_id)
+                changed.append(public_id)
 
             if give_up_ids:
                 await session.execute(
@@ -95,6 +103,7 @@ async def reap_stuck_jobs() -> None:
                     .values(status="uploaded", failure_reason=None)
                 )
             await session.commit()
+        await cache.forget_videos(resources.redis, changed)
 
         for video_id in retry_ids:
             await transcode_video.kiq(video_id)
@@ -129,3 +138,4 @@ async def cleanup_pending_uploads() -> None:
                 await session.delete(video)
             if videos:
                 await session.commit()
+        await cache.forget_videos(resources.redis, [video.public_id for video in videos])

@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     # RabbitMQ task broker. The API publishes jobs and workers/scheduler consume them.
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
+    # Management HTTP API, for queue depths on the admin System panel. When unset,
+    # it is the broker's host on port 15672 with the broker's credentials.
+    rabbitmq_management_url: str | None = None
 
     # S3-compatible object storage. The API uses the internal endpoint for
     # server-side operations and the public endpoint when signing browser URLs.

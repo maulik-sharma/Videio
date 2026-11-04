@@ -1,6 +1,7 @@
 import { Link, Navigate } from 'react-router';
 import { useMe } from '../auth/session.js';
 import { useMyVideos } from '../api/videos.js';
+import { OwnerActions } from '../components/OwnerDialogs.jsx';
 import StatusBadge from '../components/StatusBadge.jsx';
 import Thumbnail from '../components/Thumbnail.jsx';
 import { formatBytes, formatDate, formatRelative, formatViews } from '../utils/format.js';
@@ -8,10 +9,10 @@ import { formatBytes, formatDate, formatRelative, formatViews } from '../utils/f
 const VISIBILITY = { public: 'Public', unlisted: 'Unlisted', private: 'Private' };
 
 function VideoRow({ video }) {
-  const ready = video.status === 'ready';
+  const ready = video.status === 'ready' && !video.removed_at;
   const thumb = (
     <Thumbnail
-      src={video.thumbnail_url}
+      src={video.removed_at ? null : video.thumbnail_url}
       duration={video.duration_s}
       renditions={video.renditions}
     />
@@ -30,7 +31,12 @@ function VideoRow({ video }) {
           {ready ? <Link to={`/v/${video.public_id}`}>{video.title}</Link> : video.title}
         </h2>
         {video.description ? <p className="row-description">{video.description}</p> : null}
-        <StatusBadge status={video.status} reason={video.failure_reason} />
+        <StatusBadge
+          status={video.status}
+          reason={video.failure_reason}
+          removedReason={video.removed_at ? (video.removal_reason ?? '') : null}
+        />
+        <OwnerActions video={video} compact />
       </div>
       <dl className="row-facts">
         <div className="fact-1">

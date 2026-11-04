@@ -4,6 +4,7 @@ import { useMe } from './auth/session.js';
 import { Drawer, Sidebar } from './components/Sidebar.jsx';
 import Topbar from './components/Topbar.jsx';
 import { readPref, writePref } from './utils/prefs.js';
+import Admin from './pages/Admin.jsx';
 import AuthPage from './pages/AuthPage.jsx';
 import Home from './pages/Home.jsx';
 import MyVideos from './pages/MyVideos.jsx';
@@ -68,6 +69,7 @@ export default function App() {
             <Route path="/upload" element={<Upload />} />
             <Route path="/my-videos" element={<MyVideos />} />
             <Route path="/v/:publicId" element={<VideoPage />} />
+            <Route path="/admin" element={<Admin />} />
             <Route path="/login" element={<AuthPage mode="login" key="login" />} />
             <Route path="/register" element={<AuthPage mode="register" key="register" />} />
             <Route path="*" element={<NotFound />} />
