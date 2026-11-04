@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from redis.asyncio import Redis
 

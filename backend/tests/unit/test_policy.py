@@ -10,7 +10,8 @@ def _u():
 
 
 def _user(role="user", id_=None, **extra):
-    return type("User", (), {"role": role, "id": id_ or _u(), "email": f"test@{role}.com", "display_name": role, **extra})()
+    email = f"test@{role}.com"
+    return type("User", (), {"role": role, "id": id_ or _u(), "email": email, "display_name": role, **extra})()
 
 
 def _video(**kwargs):
