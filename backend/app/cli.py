@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import uuid
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -140,13 +141,13 @@ async def _ensure_user(
         return user
 
 
-async def _already_seeded(db: Database, owner_id: object) -> bool:
+async def _already_seeded(db: Database, owner_id: uuid.UUID) -> bool:
     """True when the demo user already has at least one ready video."""
     async with db.read_sessions() as session:
         count = await session.scalar(
             select(func.count())
             .select_from(Video)
-            .where(Video.owner_id == owner_id, Video.status == "ready")  # type: ignore[arg-type]
+            .where(Video.owner_id == owner_id, Video.status == "ready")
         )
         return bool(count and count > 0)
 

@@ -3,7 +3,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import desc, select, tuple_
+from sqlalchemy import desc, literal, select, tuple_
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import (
@@ -321,7 +321,8 @@ async def my_videos(
     )
     if after is not None:
         statement = statement.where(
-            tuple_(Video.created_at, Video.id) < tuple_(after.created_at, after.video_id)
+            tuple_(Video.created_at, Video.id)
+            < tuple_(literal(after.created_at), literal(after.video_id))
         )
     statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(limit + 1)
     rows = (await session.execute(statement)).all()

@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel, TypeAdapter
 from redis.asyncio import Redis
-from sqlalchemy import desc, or_, select, tuple_
+from sqlalchemy import desc, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cursors import VideoCursor
@@ -127,7 +127,8 @@ async def load_feed(
     )
     if after is not None:
         statement = statement.where(
-            tuple_(Video.created_at, Video.id) < tuple_(after.created_at, after.video_id)
+            tuple_(Video.created_at, Video.id)
+            < tuple_(literal(after.created_at), literal(after.video_id))
         )
     statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(count)
     rows = (await session.execute(statement)).all()

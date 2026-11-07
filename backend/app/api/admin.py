@@ -10,7 +10,7 @@ import uuid
 import httpx
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
-from sqlalchemy import desc, func, select, text, tuple_
+from sqlalchemy import desc, func, literal, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentAdmin, DbDep, ReadSession, RedisDep, SettingsDep, WriteSession
@@ -175,7 +175,8 @@ async def list_videos(
         )
     if after is not None:
         statement = statement.where(
-            tuple_(Video.created_at, Video.id) < tuple_(after.created_at, after.video_id)
+            tuple_(Video.created_at, Video.id)
+            < tuple_(literal(after.created_at), literal(after.video_id))
         )
     statement = statement.order_by(desc(Video.created_at), desc(Video.id)).limit(limit + 1)
     rows = list((await session.execute(statement)).all())
