@@ -103,4 +103,3 @@ def configure(level: str = "INFO") -> None:
         lg = logging.getLogger(name)
         lg.handlers.clear()
         lg.propagate = True
-

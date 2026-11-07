@@ -156,12 +156,22 @@ async def _generate_clip(lavfi_filter: str, dest: Path) -> None:
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg",
         "-y",
-        "-f", "lavfi", "-i", lavfi_filter,
-        "-f", "lavfi", "-i", "sine=frequency=440:duration=8:sample_rate=44100",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
+        "-f",
+        "lavfi",
+        "-i",
+        lavfi_filter,
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=8:sample_rate=44100",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
         "-shortest",
         str(dest),
         stdout=asyncio.subprocess.DEVNULL,
@@ -169,9 +179,7 @@ async def _generate_clip(lavfi_filter: str, dest: Path) -> None:
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg failed (exit {proc.returncode}): {stderr.decode()[-500:]}"
-        )
+        raise RuntimeError(f"ffmpeg failed (exit {proc.returncode}): {stderr.decode()[-500:]}")
 
 
 async def _seed_video(

@@ -69,4 +69,3 @@ def test_json_formatter_includes_exception() -> None:
     assert data["message"] == "An error occurred"
     assert "exc" in data
     assert "ValueError: Something went wrong" in data["exc"]
-
