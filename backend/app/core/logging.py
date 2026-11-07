@@ -1,12 +1,12 @@
 """Structured JSON logging for the API and workers.
 
 Every log record is emitted as a single JSON line to stdout with these fields:
-  timestamp  – ISO 8601 UTC
-  level      – DEBUG / INFO / WARNING / ERROR / CRITICAL
-  logger     – dotted logger name
-  message    – the formatted message
-  request_id – from the ASGI scope state, when set via RequestIdMiddleware
-  *           – any extra kwargs passed to the log call
+  timestamp  - ISO 8601 UTC
+  level      - DEBUG / INFO / WARNING / ERROR / CRITICAL
+  logger     - dotted logger name
+  message    - the formatted message
+  request_id - from the ASGI scope state, when set via RequestIdMiddleware
+  *          - any extra kwargs passed to the log call
 
 No third-party logging library is required; this is built on the standard
 `logging.Formatter`.
@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 
 
 class _JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:  # noqa: A003
+    def format(self, record: logging.LogRecord) -> str:
         # Let the base class format the message (applies %s substitution, exc_info, etc.)
         message = super().format(record)
         # Strip the traceback that super() appended; we put it in a separate key.
