@@ -187,6 +187,19 @@ class S3Storage:
         except (BotoCoreError, ClientError, OSError, TimeoutError) as exc:
             raise StorageError("Object storage could not download the original.") from exc
 
+    async def upload_original_from_path(self, source: Path, key: str, content_type: str) -> None:
+        """Upload a local file directly to the uploads bucket (used by the seed script)."""
+        try:
+            async with self._client() as client:
+                await client.upload_file(
+                    str(source),
+                    self.upload_bucket,
+                    key,
+                    ExtraArgs={"ContentType": content_type},
+                )
+        except (BotoCoreError, ClientError, OSError, TimeoutError) as exc:
+            raise StorageError("Object storage could not upload the original file.") from exc
+
     async def upload_media_file(self, source: Path, key: str, content_type: str) -> None:
         """Upload a generated media file to the immutable media bucket."""
         try:

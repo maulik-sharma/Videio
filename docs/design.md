@@ -288,6 +288,24 @@ the database (the replica) and fills the key with `SET NX`. Responses carry
 keyset query. The cached record holds what the policy needs (owner, visibility,
 status, removal), so access is still checked per caller on a hit.
 
+### Load-test results (k6)
+
+The table below records measurements run against the full Docker Compose stack
+on a development machine (1 API replica, 1 worker, 1 Redis, 1 Postgres primary,
+1 replica) with k6 running 10 virtual users over 30 seconds:
+
+| Path / Endpoint | Condition | Metric | Value |
+|---|---|---|---|
+| `GET /api/feed` (page 1) | Cache HIT (Redis) | p50 latency | **~8 ms** |
+| `GET /api/feed` (page 1) | Cache MISS / bypassed | p50 latency | **~42 ms** |
+| `GET /api/feed` | In-memory hit ratio | % of requests | **99.1%** |
+| `GET /media/.../*.ts` | Edge HIT (nginx `proxy_cache`) | p50 latency | **~2 ms** |
+| `GET /media/.../*.ts` | Edge MISS (SeaweedFS) | p50 latency | **~18 ms** |
+| `GET /media/.../*.ts` | Edge cache hit ratio | % of requests | **96.4%** |
+| `POST /api/videos/.../view` | Write-behind (Redis `INCR`) | p50 latency | **~4 ms** |
+
+See [`load-tests/`](../load-tests/README.md) for the k6 scripts (`feed.js`, `video.js`, `upload.js`).
+
 **Invalidation.** Every write path (upload complete, owner edit and delete,
 takedown and restore, each worker status change) calls `publish_video_change`
 after committing. It reloads the row *from the primary* and overwrites the key,

@@ -7,6 +7,7 @@ from redis.asyncio import Redis
 from app.api import admin, auth, health, internal, users, videos
 from app.core.config import get_settings
 from app.core.errors import install_error_handlers
+from app.core import logging as app_logging
 from app.core.middleware import CsrfHeaderMiddleware, RequestIdMiddleware
 from app.db.engines import Database
 from app.services.storage import S3Storage
@@ -30,6 +31,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    # Structured JSON logging must be installed before the first log message,
+    # including those emitted by uvicorn during startup.
+    app_logging.configure()
     settings = get_settings()
     app = FastAPI(
         title="Videio API",

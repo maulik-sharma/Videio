@@ -164,6 +164,63 @@ It sets the video back to `uploaded` and queues a fresh transcode with a full
 retry budget. The DLQ message itself is only a record; purge the queue when
 you no longer need it.
 
+## Worker scaling
+
+Workers consume from the shared `videio.tasks` RabbitMQ queue with `qos=1`, so
+each worker takes one job at a time. To add or remove workers:
+
+**Locally:**
+```sh
+# Scale to 3 workers (processes 3 uploads in parallel)
+docker compose up -d --scale worker=3
+
+# Scale back down
+docker compose up -d --scale worker=1
+```
+
+**In production (Portainer):**
+1. In `compose.prod.yaml`, the `worker` service defines `deploy.replicas: 1`.
+2. Edit the stack definition in Portainer, change `replicas: 2` or `3`, and click
+   **Update the stack**.
+3. Each worker takes up to 1.5 CPUs and 3 GB RAM during transcode; check VPS memory
+   headroom before scaling above 2 on a 4 GB VPS.
+
+Graceful shutdown ensures in-flight jobs are not dropped when scaling down: the worker
+waits up to 300 s (`--wait-tasks-timeout 300`) to finish the current encode before
+exiting, and Compose gives it a 310 s grace period (`stop_grace_period: 310s`).
+
+## Promoting the read replica (failover)
+
+If the primary database container fails permanently, promote the replica to
+become the new read-write primary:
+
+### Step 1: Promote the standby
+
+Open a console in `core-replica` (Portainer → Containers → `videio-core-replica-1` → Console):
+
+```sh
+# Run pg_ctl promote as the postgres user
+gosu postgres pg_ctl promote -D "$PGDATA"
+```
+
+Verify it is now primary (should output `f` for false):
+```sh
+psql -U videio -d videio -c "SELECT pg_is_in_recovery();"
+```
+
+### Step 2: Point API at the promoted replica
+
+In the Portainer stack editor:
+1. Change `VIDEIO_DB_WRITE_HOST` from `core-primary` to `core-replica`.
+2. Change `VIDEIO_DB_READ_HOST` to `core-replica` as well (until a new replica is provisioned).
+3. Update the stack.
+
+### Step 3: Re-provision a new replica (when primary recovers)
+
+1. Wipe the old primary's data volume.
+2. Reconfigure it as the replica pointing at the promoted database, or destroy
+   and recreate the stack volumes once a full backup is restored.
+
 ## One-time setup
 
 ### 1. DNS

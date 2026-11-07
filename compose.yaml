@@ -139,6 +139,29 @@ services:
     networks: [internal]
     restart: "no"
 
+  # One-shot demo seed: creates demo admin/user accounts and sample HLS videos.
+  # Run on demand: docker compose run --rm seed
+  seed:
+    build:
+      context: backend
+      target: worker  # Needs ffmpeg to generate sample clips
+    init: true
+    command: ["python", "-m", "app.cli", "seed"]
+    environment:
+      <<: *api-env
+      VIDEIO_ENV: dev
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-init:
+        condition: service_completed_successfully
+      core-replica:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [internal]
+    restart: "no"
+
   core-primary:
     image: postgres:17
     command:

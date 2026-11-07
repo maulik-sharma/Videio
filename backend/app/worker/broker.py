@@ -40,6 +40,13 @@ class VideioBroker(AioPikaBroker):
             dead_letter_queue=Queue(name=self.dead_letter_queue_name, type=QueueType.QUORUM),
         )
 
+    async def startup(self) -> None:
+        """Configure structured JSON logging before the worker starts polling."""
+        from app.core import logging as app_logging
+
+        app_logging.configure()
+        await super().startup()
+
     def on_final_failure(self, task_name: str, handler: FinalFailureHandler) -> None:
         """Run `handler` in the worker when `task_name` fails for the last time."""
         self.final_failure_handlers[task_name] = handler
