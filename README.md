@@ -1,5 +1,3 @@
-
-Demo
 # Videio
 
 [![CI](https://github.com/maulik-sharma/videio/actions/workflows/ci.yml/badge.svg)](https://github.com/maulik-sharma/videio/actions/workflows/ci.yml)
@@ -202,18 +200,6 @@ Each concept is explained in detail with rationale, trade-offs, and verification
 
 Operational guides for deployment, scaling, DLQ inspection, and failover live in
 [`docs/runbook.md`](docs/runbook.md).
-
----
-
-## Team and ownership
-
-The project is structured around three core ownership areas:
-
-| Area | Owner | Key Responsibilities |
-|---|---|---|
-| **Auth, Database & RBAC** | Maulik | PostgreSQL primary/replica streaming setup, Alembic migrations, session management, rotating refresh tokens, CSRF protection, `can()` RBAC policy, admin takedown & audit log |
-| **Storage, Queue & Transcoding** | Maulik | SeaweedFS multipart integration, RabbitMQ quorum queue topology, taskiq workers, ffmpeg adaptive HLS ladder, DLQ handling, scheduled maintenance tasks |
-| **DevOps, Edge & CI/CD** | Maulik | Docker multi-stage builds, Nginx edge configuration (cache, limits, auth_request), GitHub Actions CI/CD workflows, Tailscale ephemeral CI node, Portainer deployment |
 
 ---
 
